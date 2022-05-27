@@ -1,0 +1,51 @@
+SurfaceCapabilities {
+    min_image_count: 2,
+    max_image_count: Some(
+        8,
+    ),
+    current_extent: Some(
+        [
+            800,
+            600,
+        ],
+    ),
+    min_image_extent: [
+        800,
+        600,
+    ],
+    max_image_extent: [
+        800,
+        600,
+    ],
+    max_image_array_layers: 1,
+    supported_transforms: SupportedSurfaceTransforms {
+        identity: true,
+        rotate90: false,
+        rotate180: false,
+        rotate270: false,
+        horizontal_mirror: false,
+        horizontal_mirror_rotate90: false,
+        horizontal_mirror_rotate180: false,
+        horizontal_mirror_rotate270: false,
+        inherit: false,
+    },
+    current_transform: Identity,
+    supported_composite_alpha: SupportedCompositeAlpha {
+        opaque: true,
+        pre_multiplied: false,
+        post_multiplied: false,
+        inherit: false,
+    },
+    supported_usage_flags: ImageUsage {
+        transfer_source: true,
+        transfer_destination: true,
+        sampled: true,
+        storage: true,
+        color_attachment: true,
+        depth_stencil_attachment: false,
+        transient_attachment: false,
+        input_attachment: true,
+    },
+    full_screen_exclusive_supported: false,
+}
+Cant see whats behind you
