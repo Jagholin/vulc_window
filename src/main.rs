@@ -491,6 +491,8 @@ fn main() {
     let mut recreate_swapchain = false;
     let mut window_minimized = false;
 
+    let mut current_time = std::time::Instant::now();
+
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
             event: WindowEvent::CloseRequested,
@@ -505,6 +507,7 @@ fn main() {
             window_minimized = size.height == 0 || size.width == 0;
         },
         Event::MainEventsCleared => {
+            let branch_start_time = std::time::Instant::now();
             if window_minimized {
                 return;
             }
@@ -548,12 +551,14 @@ fn main() {
             if suboptimal {
                 recreate_swapchain = true;
             }
+            let branch_duration_prefence = branch_start_time.elapsed().as_micros();
             let exec = sync::now(device.clone())
                 .join(acquire_future)
                 .then_execute(queue.clone(), comm_buffer)
                 .unwrap()
                 .then_swapchain_present(queue.clone(), swapchain.clone(), image_id)
                 .then_signal_fence_and_flush();
+
 
             match exec {
                 Ok(future) => {
@@ -564,6 +569,9 @@ fn main() {
                 }
                 Err(e) => panic!("Panic on flush: {}", e)
             }
+            let time_elapsed = current_time.elapsed().as_micros();
+            println!("FPS: {}, branch time: {} µs, pre-fence init time: {} µs", 1000000 / time_elapsed, branch_start_time.elapsed().as_micros(), branch_duration_prefence);
+            current_time = std::time::Instant::now();
         },
         _ => {},
     });
