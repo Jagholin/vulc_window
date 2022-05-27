@@ -4,20 +4,24 @@ mod cs;
 mod input_helpers;
 mod logger;
 mod renderer;
+mod vertex_type;
+mod mesh;
+mod graphics_context;
 
-use bytemuck::{Pod, Zeroable};
+use graphics_context::GraphicsContext;
+use vertex_type::VertexStruct;
 use image::{ImageBuffer, Rgba};
 use logger::Logger;
 use renderer::{VertexBufferRenderer, IssueCommands};
 use vulkano::pipeline::GraphicsPipeline;
-use std::collections::HashMap;
 use std::sync::Arc;
 use vulkano::image::ImageViewAbstract;
 use vulkano::shader::ShaderModule;
+use mesh::Mesh;
 
 use vulkano::buffer::{BufferAccess, BufferUsage, CpuAccessibleBuffer};
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, PrimaryCommandBuffer,
+    AutoCommandBufferBuilder, PrimaryAutoCommandBuffer, PrimaryCommandBuffer,
 };
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
@@ -35,65 +39,7 @@ use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
 
-type StandardCommandBuilder = AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>;
-
-struct GraphicsContext {
-    device: Arc<Device>,
-    queue: Arc<Queue>,
-    cached_commands: HashMap<String, Arc<dyn PrimaryCommandBuffer>>, // command_builder: StandardCommandBuilder,
-                                                                     // pipeline: Arc<ComputePipeline>,
-                                                                     // descriptor_set: Arc<PersistentDescriptorSet>,
-}
-
-impl GraphicsContext {
-    fn new(
-        device: Arc<Device>,
-        queue: Arc<Queue>, // pipeline: Arc<ComputePipeline>,
-                           // command_builder: StandardCommandBuilder
-                           /* descriptor_set: Arc<PersistentDescriptorSet>*/
-    ) -> GraphicsContext {
-        GraphicsContext {
-            device,
-            queue,
-            cached_commands: HashMap::new(), // command_builder,
-                                             // pipeline,
-                                             // descriptor_set
-        }
-    }
-    fn create_command_builder(&self) -> StandardCommandBuilder {
-        AutoCommandBufferBuilder::primary(
-            self.device.clone(),
-            self.queue.family(),
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap()
-    }
-    fn command_buffer_cached<F>(
-        &mut self,
-        name: String,
-        initializer_fn: F,
-    ) -> Arc<dyn PrimaryCommandBuffer>
-    where
-        F: FnOnce(&GraphicsContext) -> Arc<dyn PrimaryCommandBuffer>,
-    {
-        match self.cached_commands.get(&name) {
-            Some(buff) => buff.to_owned(),
-            None => {
-                let buff = initializer_fn(self);
-                self.cached_commands.insert(name, buff.clone());
-                buff
-            }
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Default, Clone, Copy, Zeroable, Pod)]
-struct VertexStruct {
-    position: [f32; 2],
-}
-
-vulkano::impl_vertex!(VertexStruct, position);
+pub type StandardCommandBuilder = AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>;
 
 fn get_framebuffers(
     images: &[Arc<SwapchainImage<Window>>],
@@ -159,14 +105,6 @@ fn clear_image<T>(
     command_builder
         .clear_color_image(image.clone(), ClearValue::Float([0.0, 0.0, 1.0, 1.0]))
         .unwrap();
-
-    // let command_buffer = builder.build().unwrap();
-    // execute command buffer and wait for
-
-    // execute_command_buffer(&gc, command_buffer);
-    // println!("image cleared!");
-    // execute_command_buffer(&gc, command_buffer);
-    // execute_command_buffer(gc, command_buffer);
 }
 
 fn export_image<T>(
@@ -284,18 +222,16 @@ fn graphics_context(device: Arc<Device>, queue: Arc<Queue>) -> GraphicsContext {
     GraphicsContext::new(device, queue)
 }
 
-fn create_vertex_buffer(gc: &GraphicsContext) -> Arc<CpuAccessibleBuffer<[VertexStruct]>> {
-    let v1 = VertexStruct{position: [-0.5, -0.5]};
-    let v2 = VertexStruct{position: [0.0, 0.5]};
-    let v3 = VertexStruct{position: [0.5, -0.25]};
-
-    CpuAccessibleBuffer::from_iter(gc.device.clone(), BufferUsage::vertex_buffer(), false, [v1, v2, v3].into_iter()).unwrap()
-}
-
 // todo: extract VBOs somewhere else - they are not needed here
 
 /// This function initiates framebuffers, renderbuffers and pipeline
-fn prepare_graphics(device: Arc<Device>, queue: Arc<Queue>, vbo: Arc<CpuAccessibleBuffer<[VertexStruct]>>, swapchain: Arc<Swapchain<Window>>, swapchain_images: &[Arc<SwapchainImage<Window>>], dimensions: [f32; 2]) -> Vec<VertexBufferRenderer<VertexStruct>> {
+fn prepare_graphics(device: Arc<Device>, 
+    queue: Arc<Queue>, 
+    vbo: Arc<CpuAccessibleBuffer<[VertexStruct]>>, 
+    swapchain: Arc<Swapchain<Window>>, 
+    swapchain_images: &[Arc<SwapchainImage<Window>>], 
+    dimensions: [f32; 2]) -> Vec<VertexBufferRenderer<VertexStruct>> 
+{
     let gc = graphics_context(device.clone(), queue.clone());
     let vs = cs::load_vert_shader(device.clone()).unwrap();
     let fs = cs::load_frag_shader(device.clone()).unwrap();
@@ -303,18 +239,7 @@ fn prepare_graphics(device: Arc<Device>, queue: Arc<Queue>, vbo: Arc<CpuAccessib
     // creating a framebuffer
     let fbs = get_framebuffers(swapchain_images, render_pass.clone());
 
-    // let image = create_image(&gc);
-    // let image_view = ImageView::new_default(image.clone()).unwrap();
-    // let fb = Framebuffer::new(
-    //     render_pass,
-    //     FramebufferCreateInfo { attachments: vec![image_view], ..Default::default() } ).unwrap();
-    // let mut command_builder = gc.create_command_builder();
     VertexBufferRenderer::new(&fbs, pipeline, vbo)
-
-    // let export_finisher = export_image(&gc, image, &mut command_builder);
-    // let commands = command_builder.build().unwrap();
-    // execute_command_buffer(&gc, commands);
-    // export_finisher(&gc);
 }
 
 fn perform_compute(device: Arc<Device>, queue: Arc<Queue>) {
@@ -439,14 +364,10 @@ fn main() {
         (device, queue, caps, image_format)
     };
 
-    // perform_compute(device.clone(), queue.clone());
-    // perform_graphics(device.clone(), queue.clone());
     let gc = graphics_context(device.clone(), queue.clone());
-    // return;
 
     let dimensions = surface.window().inner_size();
     let composite_alpha = caps.supported_composite_alpha.iter().next().unwrap();
-    // println!("{:#?}", physical_device);
 
     let (mut swapchain, images) = Swapchain::new(
         device.clone(),
@@ -462,28 +383,11 @@ fn main() {
     )
     .unwrap();
 
-    /*let render_pass = vulkano::single_pass_renderpass!(device.clone(), attachments: {
-            color: {
-                load: Clear,
-                store: Store,
-                format: swapchain.image_format(),
-                samples: 1,
-            }
-        },
-        pass: {
-            color: [color],
-            depth_stencil: {}
-        }
-    )
-    .unwrap();
-
-    let framebuffers = get_framebuffers(&images, render_pass.clone()); */
-
-    let vertex_buffer = create_vertex_buffer(&gc);
+    let mut mesh = Mesh::new(&gc);
+    let vertex_buffer = mesh.vbo();
     let mut command_builders = prepare_graphics(device.clone(), queue.clone(), vertex_buffer.clone(), swapchain.clone(), &images,
         [dimensions.width as f32, dimensions.height as f32]);
 
-    // log_writer.write_all(format!("{:#?}", physical_device).as_bytes()).expect("cant write into logfile");
     logger.log(format!("{:#?}\n", caps).as_str());
     logger.log("Cant see whats behind you\n");
 
@@ -527,11 +431,8 @@ fn main() {
                 };
                 swapchain = new_swapchain;
 
-                // let new_framebuffers = get_framebuffers(&new_images, render_pass.clone());
                 if window_resized {
                     window_resized = false;
-
-                    // todo: continue with stuff here
                     command_builders = prepare_graphics(device.clone(), queue.clone(), vertex_buffer.clone(), swapchain.clone(), &images,
                         [dimensions.width as f32, dimensions.height as f32]);
                 }
