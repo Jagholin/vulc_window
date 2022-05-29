@@ -7,6 +7,7 @@ mod renderer;
 mod vertex_type;
 mod mesh;
 mod graphics_context;
+mod fbx;
 
 use graphics_context::GraphicsContext;
 use vertex_type::VertexStruct;
@@ -227,7 +228,8 @@ fn graphics_context(device: Arc<Device>, queue: Arc<Queue>) -> GraphicsContext {
 /// This function initiates framebuffers, renderbuffers and pipeline
 fn prepare_graphics(device: Arc<Device>, 
     queue: Arc<Queue>, 
-    vbo: Arc<CpuAccessibleBuffer<[VertexStruct]>>, 
+    mesh: & Mesh,
+    //vbo: Arc<CpuAccessibleBuffer<[VertexStruct]>>, 
     swapchain: Arc<Swapchain<Window>>, 
     swapchain_images: &[Arc<SwapchainImage<Window>>], 
     dimensions: [f32; 2]) -> Vec<VertexBufferRenderer<VertexStruct>> 
@@ -239,7 +241,7 @@ fn prepare_graphics(device: Arc<Device>,
     // creating a framebuffer
     let fbs = get_framebuffers(swapchain_images, render_pass.clone());
 
-    VertexBufferRenderer::new(&fbs, pipeline, vbo)
+    VertexBufferRenderer::new(&fbs, pipeline, mesh)
 }
 
 fn perform_compute(device: Arc<Device>, queue: Arc<Queue>) {
@@ -304,6 +306,10 @@ fn perform_compute(device: Arc<Device>, queue: Arc<Queue>) {
 fn main() {
     let mut logger = Logger::new(logger::create_logfile());
 
+    let fbxfile = input_helpers::ask::<String>("enter fbx file name").unwrap();
+    let vertex_data = fbx::read_fbx_document(&fbxfile, &mut logger).unwrap();
+    // return;
+
     let required_extensions = vulkano_win::required_extensions();
     let instance = Instance::new(InstanceCreateInfo {
         enabled_extensions: required_extensions,
@@ -364,7 +370,7 @@ fn main() {
         (device, queue, caps, image_format)
     };
 
-    let gc = graphics_context(device.clone(), queue.clone());
+    let gc = Arc::new(graphics_context(device.clone(), queue.clone()));
 
     let dimensions = surface.window().inner_size();
     let composite_alpha = caps.supported_composite_alpha.iter().next().unwrap();
@@ -383,12 +389,12 @@ fn main() {
     )
     .unwrap();
 
-    let mut mesh = Mesh::new(&gc);
-    let vertex_buffer = mesh.vbo();
-    let mut command_builders = prepare_graphics(device.clone(), queue.clone(), vertex_buffer.clone(), swapchain.clone(), &images,
+    let mut mesh = Mesh::from_vertex_vec(gc.clone(), vertex_data);
+    // let vertex_buffer = mesh.vbo();
+    let mut command_builders = prepare_graphics(device.clone(), queue.clone(), &mesh, swapchain.clone(), &images,
         [dimensions.width as f32, dimensions.height as f32]);
 
-    logger.log(format!("{:#?}\n", caps).as_str());
+    //logger.log(format!("{:#?}\n", caps).as_str());
     logger.log("Cant see whats behind you\n");
 
     let mut window_resized = false;
@@ -433,7 +439,7 @@ fn main() {
 
                 if window_resized {
                     window_resized = false;
-                    command_builders = prepare_graphics(device.clone(), queue.clone(), vertex_buffer.clone(), swapchain.clone(), &images,
+                    command_builders = prepare_graphics(device.clone(), queue.clone(), &mesh, swapchain.clone(), &images,
                         [dimensions.width as f32, dimensions.height as f32]);
                 }
             }
@@ -471,7 +477,7 @@ fn main() {
                 Err(e) => panic!("Panic on flush: {}", e)
             }
             let time_elapsed = current_time.elapsed().as_micros();
-            println!("FPS: {}, branch time: {} µs, pre-fence init time: {} µs", 1000000 / time_elapsed, branch_start_time.elapsed().as_micros(), branch_duration_prefence);
+            // println!("FPS: {}, branch time: {} µs, pre-fence init time: {} µs", 1000000 / time_elapsed, branch_start_time.elapsed().as_micros(), branch_duration_prefence);
             current_time = std::time::Instant::now();
         },
         _ => {},

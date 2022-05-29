@@ -36,7 +36,7 @@ pub fn create_logfile() -> impl Write {
         .write(true)
         .create(true)
         .truncate(true)
-        .open("logfile.txt")
+        .open("logfile2.txt")
         .expect("cant open logfile for writing.");
     logfile
     // BufWriter::new(logfile)
