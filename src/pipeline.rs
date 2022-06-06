@@ -1,22 +1,22 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::PrimaryAutoCommandBuffer;
 use vulkano::command_buffer::SubpassContents;
 use vulkano::format::ClearValue;
 use vulkano::format::Format;
-use vulkano::image::{SwapchainImage, view::ImageView, AttachmentImage, view::ImageViewCreateInfo};
-use vulkano::pipeline::GraphicsPipeline;
+use vulkano::image::{view::ImageView, view::ImageViewCreateInfo, AttachmentImage, SwapchainImage};
+use vulkano::pipeline::graphics::depth_stencil::DepthStencilState;
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::pipeline::graphics::viewport::ViewportState;
-use vulkano::pipeline::graphics::depth_stencil::DepthStencilState;
-use vulkano::render_pass::{RenderPass, Subpass, FramebufferCreateInfo};
+use vulkano::pipeline::GraphicsPipeline;
 use vulkano::render_pass::Framebuffer;
+use vulkano::render_pass::{FramebufferCreateInfo, RenderPass, Subpass};
 use vulkano::shader::ShaderModule;
 use winit::window::Window;
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
 // use std::sync::RwLock;
 
 use crate::graphics_context::GraphicsContext;
@@ -26,21 +26,21 @@ type StandardCommandBuilder = AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>
 /// render pass requires:
 /// color and depth attachment formats
 /// device
-/// 
+///
 /// render pass is used in:
 /// pipeline definition
 /// framebuffers creation
-/// 
-/// 
+///
+///
 /// graphics pipeline requires:
 /// definition of vertex buffer(or any input buffers)
 /// vertex shader object
 /// fragment shader object
 /// input assembly state (input geometry topology, default is single triangles)
-/// 
+///
 /// graphics pipeline is used in:
 /// issuing rendering commands
-/// 
+///
 
 pub trait FramebufferGiver {
     fn give_framebuffer(&self, frameindex: usize) -> Arc<Framebuffer>;
@@ -51,7 +51,7 @@ pub trait FramebufferHolder {
 
     fn framebuffer_created(&mut self, fb: Arc<Framebuffer>);
     fn framebuffer_giver(&self) -> Self::Giver;
-    // 
+    //
 }
 
 #[derive(Clone)]
@@ -61,7 +61,9 @@ pub struct FramebufferFrameSwapper {
 
 impl FramebufferFrameSwapper {
     pub fn new() -> Self {
-        FramebufferFrameSwapper { fbs: Default::default() }
+        FramebufferFrameSwapper {
+            fbs: Default::default(),
+        }
     }
 }
 
@@ -73,7 +75,9 @@ impl FramebufferHolder for FramebufferFrameSwapper {
         // self.fbs.push(fb);
     }
     fn framebuffer_giver(&self) -> Self::Giver {
-        Self { fbs: Rc::clone(&self.fbs) }
+        Self {
+            fbs: Rc::clone(&self.fbs),
+        }
     }
 }
 
@@ -92,12 +96,12 @@ fn shader_pipeline_graphics(
     fs: Arc<ShaderModule>,
     format: Format,
     depth_format: Format,
-    dimensions: [f32; 2]
+    dimensions: [f32; 2],
 ) -> (Arc<RenderPass>, Arc<GraphicsPipeline>) {
     let viewport = Viewport {
         origin: [0.0, 0.0],
         dimensions,
-        depth_range: 0.0..1.0
+        depth_range: 0.0..1.0,
     };
 
     let render_pass = vulkano::single_pass_renderpass!(gc.device.clone(),
@@ -119,7 +123,8 @@ fn shader_pipeline_graphics(
             color: [color],
             depth_stencil: {depth}
         }
-    ).unwrap();
+    )
+    .unwrap();
 
     let pipeline = GraphicsPipeline::start()
         .vertex_input_state(BuffersDefinition::new().vertex::<VertexStruct>())
@@ -145,17 +150,17 @@ fn get_framebuffers(
         .into_iter()
         .map(|image| {
             let view = ImageView::new_default(image.clone()).unwrap();
-            let depth_buffer = AttachmentImage::transient(gc.device.clone(), 
-                dimensions, 
-                depth_format).unwrap();
+            let depth_buffer =
+                AttachmentImage::transient(gc.device.clone(), dimensions, depth_format).unwrap();
             let depth_view = ImageView::new(
                 depth_buffer.clone(),
-                ImageViewCreateInfo { 
+                ImageViewCreateInfo {
                     format: Some(depth_format),
                     aspects: depth_format.aspects(),
                     ..Default::default()
-                }
-            ).unwrap();
+                },
+            )
+            .unwrap();
             Framebuffer::new(
                 render_pass.clone(),
                 FramebufferCreateInfo {
@@ -184,29 +189,52 @@ pub struct VulkanPipelineBuilder<T> {
     dimensions: Option<[f32; 2]>,
 }
 
-impl<T> VulkanPipelineBuilder<T> where
-T: IntoIterator<Item = Arc<SwapchainImage<Window>>>
+impl<T> VulkanPipelineBuilder<T>
+where
+    T: IntoIterator<Item = Arc<SwapchainImage<Window>>>,
 {
     pub fn vs(self, sm: Arc<ShaderModule>) -> Self {
-        Self{vs: Some(sm), ..self}
+        Self {
+            vs: Some(sm),
+            ..self
+        }
     }
     pub fn fs(self, sm: Arc<ShaderModule>) -> Self {
-        Self{fs: Some(sm), ..self}
+        Self {
+            fs: Some(sm),
+            ..self
+        }
     }
     pub fn format(self, f: Format) -> Self {
-        Self{format: Some(f), ..self}
+        Self {
+            format: Some(f),
+            ..self
+        }
     }
     pub fn images(self, img: T) -> Self {
-        Self{images: Some(img), ..self}
+        Self {
+            images: Some(img),
+            ..self
+        }
     }
     pub fn depth_format(self, f: Format) -> Self {
-        Self{depth_format: Some(f), ..self}
+        Self {
+            depth_format: Some(f),
+            ..self
+        }
     }
     pub fn dimensions(self, dim: [f32; 2]) -> Self {
-        Self{dimensions: Some(dim), ..self}
+        Self {
+            dimensions: Some(dim),
+            ..self
+        }
     }
 
-    pub fn build<F: FramebufferHolder>(self, gc: &GraphicsContext, fb_holder: &mut F) -> VulkanPipeline<F::Giver> {
+    pub fn build<F: FramebufferHolder>(
+        self,
+        gc: &GraphicsContext,
+        fb_holder: &mut F,
+    ) -> VulkanPipeline<F::Giver> {
         let vs = self.vs.unwrap();
         let fs = self.fs.unwrap();
         let format = self.format.unwrap();
@@ -214,25 +242,50 @@ T: IntoIterator<Item = Arc<SwapchainImage<Window>>>
         let depth_format = self.depth_format.unwrap();
         let dims = self.dimensions.unwrap();
 
-        let (render_pass, pipeline) = shader_pipeline_graphics(gc, vs, fs, format, depth_format, dims);
-        let fbs = get_framebuffers(gc, images, render_pass.clone(), depth_format, [dims[0] as u32, dims[1] as u32]);
+        let (render_pass, pipeline) =
+            shader_pipeline_graphics(gc, vs, fs, format, depth_format, dims);
+        let fbs = get_framebuffers(
+            gc,
+            images,
+            render_pass.clone(),
+            depth_format,
+            [dims[0] as u32, dims[1] as u32],
+        );
         // let fbh = fb_holder.get_mut().unwrap();
         for f in fbs {
             fb_holder.framebuffer_created(f);
         }
-        VulkanPipeline { pipeline, render_pass, framebuffer_giver: fb_holder.framebuffer_giver() }
+        VulkanPipeline {
+            pipeline,
+            render_pass,
+            framebuffer_giver: fb_holder.framebuffer_giver(),
+        }
     }
- }
+}
 
-impl<T> VulkanPipeline<T> 
-where T: FramebufferGiver {
+impl<T> VulkanPipeline<T>
+where
+    T: FramebufferGiver,
+{
     pub fn new<Y>() -> VulkanPipelineBuilder<Y> {
-        VulkanPipelineBuilder { vs: None, fs: None, format: None, images: None, depth_format: None, dimensions: None }
+        VulkanPipelineBuilder {
+            vs: None,
+            fs: None,
+            format: None,
+            images: None,
+            depth_format: None,
+            dimensions: None,
+        }
     }
 
     pub fn begin_render(&self, command_builder: &mut StandardCommandBuilder, frameindex: usize) {
         let fb = self.framebuffer_giver.give_framebuffer(frameindex);
-        command_builder.begin_render_pass(fb, SubpassContents::Inline, vec![[0.0, 0.0, 0.0, 1.0].into(), ClearValue::Depth(1000.0)])
+        command_builder
+            .begin_render_pass(
+                fb,
+                SubpassContents::Inline,
+                vec![[0.0, 0.0, 0.0, 1.0].into(), ClearValue::Depth(1000.0)],
+            )
             .unwrap()
             .bind_pipeline_graphics(self.pipeline.clone());
     }

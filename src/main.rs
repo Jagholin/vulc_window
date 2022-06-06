@@ -1,55 +1,41 @@
 #![allow(dead_code, unused_variables, clippy::redundant_clone)]
 
 mod cs;
+mod fbx;
+mod graphics_context;
 mod input_helpers;
 mod logger;
+mod mesh;
+mod pipeline;
 mod renderer;
 mod vertex_type;
-mod mesh;
-mod graphics_context;
-mod fbx;
-mod pipeline;
 
 use graphics_context::GraphicsContext;
-use vertex_type::VertexStruct;
-use image::{ImageBuffer, Rgba};
 use logger::Logger;
-use renderer::{VertexBufferRenderer, IssueCommands};
-use pipeline::{StandardVulcanPipeline, FramebufferFrameSwapper};
-use vulkano::pipeline::GraphicsPipeline;
-use vulkano::pipeline::graphics::depth_stencil::DepthStencilState;
-use std::sync::Arc;
-use vulkano::image::{ImageViewAbstract, ImageFormatInfo};
-use vulkano::shader::ShaderModule;
 use mesh::Mesh;
+use pipeline::{FramebufferFrameSwapper, StandardVulcanPipeline};
+use renderer::{IssueCommands, VertexBufferRenderer};
+use std::sync::Arc;
+use vulkano::image::ImageFormatInfo;
 
-use vulkano::buffer::{BufferAccess, BufferUsage, CpuAccessibleBuffer};
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, PrimaryAutoCommandBuffer, PrimaryCommandBuffer,
 };
-use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo};
-use vulkano::format::{ClearValue, Format};
-use vulkano::image::{view::ImageView, view::ImageViewCreateInfo, ImageDimensions, ImageUsage, StorageImage, SwapchainImage, AttachmentImage, ImageAspect};
+use vulkano::format::Format;
+use vulkano::image::{ImageUsage, SwapchainImage};
 use vulkano::instance::{Instance, InstanceCreateInfo};
-use vulkano::pipeline::{compute::ComputePipeline, Pipeline, PipelineBindPoint};
-use vulkano::pipeline::graphics::{input_assembly::InputAssemblyState, vertex_input::BuffersDefinition, viewport::{Viewport, ViewportState}};
-use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
-use vulkano::swapchain::{Swapchain, SwapchainCreateInfo, SwapchainCreationError, self, AcquireError};
-use vulkano::sync::{self, GpuFuture, FlushError};
+use vulkano::swapchain::{
+    self, AcquireError, Swapchain, SwapchainCreateInfo, SwapchainCreationError,
+};
+use vulkano::sync::{self, FlushError, GpuFuture};
 use vulkano_win::VkSurfaceBuild;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
 
 pub type StandardCommandBuilder = AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>;
-
-fn create_integer_buffer(device: Arc<Device>) -> Arc<CpuAccessibleBuffer<[i32]>> {
-    let data_iter = 0..65536;
-    CpuAccessibleBuffer::from_iter(device, BufferUsage::all(), false, data_iter)
-        .expect("Cant create test buffer")
-}
 
 fn execute_command_buffer<T>(cg: &GraphicsContext, buff: T)
 where
@@ -64,127 +50,24 @@ where
     future.wait(None).unwrap();
 }
 
-fn create_image(gc: &GraphicsContext) -> Arc<StorageImage> {
-    let result = StorageImage::new(
-        gc.device.clone(),
-        ImageDimensions::Dim2d {
-            width: 1024,
-            height: 1024,
-            array_layers: 1,
-        },
-        Format::R8G8B8A8_UNORM,
-        Some(gc.queue.family()),
-    )
-    .unwrap();
-    println!("image created!");
-    result
-}
-
-fn clear_image<T>(
-    gc: &GraphicsContext,
-    image: Arc<StorageImage>,
-    command_builder: &mut AutoCommandBufferBuilder<T>,
-) {
-    // let mut builder = gc.create_command_builder();
-    command_builder
-        .clear_color_image(image.clone(), ClearValue::Float([0.0, 0.0, 1.0, 1.0]))
-        .unwrap();
-}
-
-fn export_image<T>(
-    gc: &GraphicsContext,
-    image: Arc<StorageImage>,
-    command_builder: &mut AutoCommandBufferBuilder<T>,
-) -> impl FnOnce(&GraphicsContext) {
-    let buf = CpuAccessibleBuffer::from_iter(
-        gc.device.clone(),
-        BufferUsage::all(),
-        false,
-        (0..1024 * 1024 * 4).map(|_| 255u8),
-    )
-    .expect("cant create buffer to save the image");
-
-    command_builder
-        .copy_image_to_buffer(image, buf.clone())
-        .unwrap();
-
-    move |gc| {
-        let content = buf.read().unwrap();
-        let image = ImageBuffer::<Rgba<u8>, _>::from_raw(1024, 1024, &content[..]).unwrap();
-        println!("image exported!");
-        image.save("image.png").unwrap();
-    }
-}
-
-fn bind_data_to(
-    pipeline: Arc<ComputePipeline>,
-    data_buffer: Arc<dyn BufferAccess>,
-) -> Arc<PersistentDescriptorSet> {
-    let layout = pipeline.layout().set_layouts().get(0).unwrap();
-    PersistentDescriptorSet::new(
-        layout.clone(),
-        [WriteDescriptorSet::buffer(0, data_buffer.clone())],
-    )
-    .expect("cant create descriptor set")
-}
-
-fn bind_imageview_to(
-    pipeline: Arc<ComputePipeline>,
-    img_view: Arc<dyn ImageViewAbstract>,
-) -> Arc<PersistentDescriptorSet> {
-    let layout = pipeline.layout().set_layouts().get(0).unwrap();
-    PersistentDescriptorSet::new(
-        layout.clone(),
-        [WriteDescriptorSet::image_view(0, img_view.clone())],
-    )
-    .expect("cant create descriptor set")
-}
-
-fn shader_pipeline_compute(
-    device: Arc<Device>,
-    queue: Arc<Queue>,
-    shader: Arc<ShaderModule>,
-) -> (Arc<ShaderModule>, Arc<ComputePipeline>) {
-    // let shader = cs::load(device.clone()).expect("failed to create shader module");
-    let pipeline = ComputePipeline::new(
-        device.clone(),
-        shader.entry_point("main").unwrap(),
-        &(),
-        None,
-        |_| {},
-    )
-    .expect("cant create compute pipeline");
-
-    (shader, pipeline)
-}
-
-fn compute_context(device: Arc<Device>, queue: Arc<Queue>) -> GraphicsContext {
-    GraphicsContext::new(device, queue)
-}
-
 fn graphics_context(device: Arc<Device>, queue: Arc<Queue>) -> GraphicsContext {
     GraphicsContext::new(device, queue)
 }
 
-// todo: extract VBOs somewhere else - they are not needed here
-
 /// This function initiates framebuffers, renderbuffers and pipeline
-fn prepare_graphics(// device: Arc<Device>, 
-    // queue: Arc<Queue>, 
-    // mesh: & Mesh,
-    //vbo: Arc<CpuAccessibleBuffer<[VertexStruct]>>, 
+fn prepare_graphics(
     gc: &GraphicsContext,
-    swapchain: Arc<Swapchain<Window>>, 
-    swapchain_images: impl IntoIterator<Item = Arc<SwapchainImage<Window>>>, 
+    swapchain: Arc<Swapchain<Window>>,
+    swapchain_images: impl IntoIterator<Item = Arc<SwapchainImage<Window>>>,
     depth_format: Format,
-    dimensions: [f32; 2]) -> (StandardVulcanPipeline, FramebufferFrameSwapper)
-{
-    // let gc = graphics_context(device.clone(), queue.clone());
+    dimensions: [f32; 2],
+) -> (StandardVulcanPipeline, FramebufferFrameSwapper) {
     let vs = cs::load_vert_shader(gc.device.clone()).unwrap();
     let fs = cs::load_frag_shader(gc.device.clone()).unwrap();
 
     let mut frame_holder = FramebufferFrameSwapper::new();
-    let pipe = StandardVulcanPipeline::new().fs(fs)
+    let pipe = StandardVulcanPipeline::new()
+        .fs(fs)
         .vs(vs)
         .depth_format(depth_format)
         .dimensions(dimensions)
@@ -193,70 +76,6 @@ fn prepare_graphics(// device: Arc<Device>,
         .build(&gc, &mut frame_holder);
 
     (pipe, frame_holder)
-    // let (render_pass, pipeline) = shader_pipeline_graphics(&gc, vs, fs, swapchain.image_format(), depth_format, dimensions);
-    // creating a framebuffer
-    // let fbs = get_framebuffers(&gc, swapchain_images, render_pass.clone(), depth_format, dimensions.map(|x| x as u32));
-
-    // VertexBufferRenderer::new(&fbs, pipeline, mesh)
-}
-
-fn perform_compute(device: Arc<Device>, queue: Arc<Queue>) {
-    let gc = compute_context(device.clone(), queue.clone());
-    let (shader, pipeline) = shader_pipeline_compute(
-        device.clone(),
-        queue.clone(),
-        cs::load_mult_const(device.clone()).expect("failed to create shader module"),
-    );
-    let data_buffer = create_integer_buffer(device.clone());
-    let set = bind_data_to(pipeline.clone(), data_buffer.clone());
-    let mut command_builder = gc.create_command_builder();
-
-    command_builder
-        .bind_pipeline_compute(pipeline.clone())
-        .bind_descriptor_sets(
-            PipelineBindPoint::Compute,
-            pipeline.layout().clone(),
-            0,
-            set,
-        )
-        .dispatch([1024, 1, 1])
-        .unwrap();
-
-    let command_buffer = command_builder.build().unwrap();
-
-    execute_command_buffer(&gc, command_buffer);
-
-    let content = data_buffer.read().unwrap();
-    for (n, val) in content.iter().enumerate() {
-        assert_eq!(*val, n as i32 * 12);
-    }
-    println!("Successful compute run!");
-
-    // testing image creation
-    let (_, pipeline) = shader_pipeline_compute(
-        gc.device.clone(),
-        queue.clone(),
-        cs::load_test_compute(device).unwrap(),
-    );
-    let image = create_image(&gc);
-    let image_view = ImageView::new_default(image.clone()).unwrap();
-    let set = bind_imageview_to(pipeline.clone(), image_view);
-    let mut command_builder = gc.create_command_builder();
-    clear_image(&gc, image.clone(), &mut command_builder);
-    command_builder
-        .bind_pipeline_compute(pipeline.clone())
-        .bind_descriptor_sets(
-            PipelineBindPoint::Compute,
-            pipeline.layout().clone(),
-            0,
-            set,
-        )
-        .dispatch([1024 / 8, 1024 / 8, 1])
-        .unwrap();
-    let finish_export = export_image(&gc, image, &mut command_builder);
-    let command_buffer = command_builder.build().unwrap();
-    execute_command_buffer(&gc, command_buffer);
-    finish_export(&gc);
 }
 
 fn main() {
@@ -264,7 +83,6 @@ fn main() {
 
     let fbxfile = input_helpers::ask::<String>("enter fbx file name").unwrap();
     let vertex_data = fbx::read_fbx_document(&fbxfile, &mut logger).unwrap();
-    // return;
 
     let required_extensions = vulkano_win::required_extensions();
     let instance = Instance::new(InstanceCreateInfo {
@@ -286,7 +104,9 @@ fn main() {
             .filter(|i| i.supported_extensions().is_superset_of(&device_extensions))
             .filter_map(|d| {
                 d.queue_families()
-                    .find(|q| q.supports_graphics() && q.supports_surface(&surface).unwrap_or(false))
+                    .find(|q| {
+                        q.supports_graphics() && q.supports_surface(&surface).unwrap_or(false)
+                    })
                     .map(|q| (d, q))
             })
             .min_by_key(|(p, _)| match p.properties().device_type {
@@ -319,19 +139,30 @@ fn main() {
         let caps = physical_device
             .surface_capabilities(&surface, Default::default())
             .expect("Cant get device surface caps");
-        let image_formats = physical_device.surface_formats(&surface, Default::default()).unwrap();
-        let candidate_depth_formats = [Format::D32_SFLOAT, Format::D32_SFLOAT_S8_UINT, Format::D24_UNORM_S8_UINT, Format::D16_UNORM, Format::D16_UNORM_S8_UINT];
-        let depth_format = candidate_depth_formats.into_iter().find(|df| {
-            let props = physical_device.image_format_properties(ImageFormatInfo { 
-                format: Some(df.to_owned()), 
-                usage: ImageUsage::depth_stencil_attachment(), 
-                ..Default::default()
-            });
-            if let Ok(Some(value)) = props {
-                return true;
-            }
-            false
-        }).unwrap();
+        let image_formats = physical_device
+            .surface_formats(&surface, Default::default())
+            .unwrap();
+        let candidate_depth_formats = [
+            Format::D32_SFLOAT,
+            Format::D32_SFLOAT_S8_UINT,
+            Format::D24_UNORM_S8_UINT,
+            Format::D16_UNORM,
+            Format::D16_UNORM_S8_UINT,
+        ];
+        let depth_format = candidate_depth_formats
+            .into_iter()
+            .find(|df| {
+                let props = physical_device.image_format_properties(ImageFormatInfo {
+                    format: Some(df.to_owned()),
+                    usage: ImageUsage::depth_stencil_attachment(),
+                    ..Default::default()
+                });
+                if let Ok(Some(value)) = props {
+                    return true;
+                }
+                false
+            })
+            .unwrap();
         println!("Image formats for given surface found: {:?}", image_formats);
         let image_format = physical_device
             .surface_formats(&surface, Default::default())
@@ -362,8 +193,13 @@ fn main() {
     let mesh = Mesh::from_vertex_vec(gc.clone(), vertex_data);
     let gc = graphics_context(device.clone(), queue.clone());
     // let vertex_buffer = mesh.vbo();
-    let (mut pipeline, mut frame_holder) = prepare_graphics(&gc, swapchain.clone(), images,
-        depth_format, [dimensions.width as f32, dimensions.height as f32]);
+    let (mut pipeline, _) = prepare_graphics(
+        &gc,
+        swapchain.clone(),
+        images,
+        depth_format,
+        [dimensions.width as f32, dimensions.height as f32],
+    );
     let mesh_vbo = VertexBufferRenderer::new(&mesh);
 
     //logger.log(format!("{:#?}\n", caps).as_str());
@@ -381,13 +217,14 @@ fn main() {
             ..
         } => {
             *control_flow = ControlFlow::Exit;
-        },
-        Event::WindowEvent { 
-            event: WindowEvent::Resized(size), ..
+        }
+        Event::WindowEvent {
+            event: WindowEvent::Resized(size),
+            ..
         } => {
             window_resized = true;
             window_minimized = size.height == 0 || size.width == 0;
-        },
+        }
         Event::MainEventsCleared => {
             let branch_start_time = std::time::Instant::now();
             if window_minimized {
@@ -399,12 +236,12 @@ fn main() {
 
                 let (new_swapchain, images) = match swapchain.recreate(SwapchainCreateInfo {
                     image_extent: dimensions.into(),
-                    .. swapchain.create_info()
+                    ..swapchain.create_info()
                 }) {
                     Ok(r) => r,
                     Err(SwapchainCreationError::ImageExtentNotSupported { .. }) => {
                         return;
-                    },
+                    }
                     Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
                 };
                 swapchain = new_swapchain;
@@ -413,23 +250,31 @@ fn main() {
                     window_resized = false;
                     // command_builders = prepare_graphics(device.clone(), queue.clone(), &mesh, swapchain.clone(), images,
                     //     depth_format, [dimensions.width as f32, dimensions.height as f32]);
-                    (pipeline, frame_holder) = prepare_graphics(&gc, swapchain.clone(), images,
-                        depth_format, [dimensions.width as f32, dimensions.height as f32]);
+                    (pipeline, _) = prepare_graphics(
+                        &gc,
+                        swapchain.clone(),
+                        images,
+                        depth_format,
+                        [dimensions.width as f32, dimensions.height as f32],
+                    );
                 }
             }
-            let (image_id, suboptimal, acquire_future) = match swapchain::acquire_next_image(swapchain.clone(), None) {
-                Ok(r) => r,
-                Err(AcquireError::OutOfDate) => {
-                    recreate_swapchain = true;
-                    return;
-                },
-                Err(e) => panic!("Acquiring swapchain image resulted in panic: {}", e),
-            };
-            // let comm_buffer = command_builders.get(image_id).unwrap();
+            let (image_id, suboptimal, acquire_future) =
+                match swapchain::acquire_next_image(swapchain.clone(), None) {
+                    Ok(r) => r,
+                    Err(AcquireError::OutOfDate) => {
+                        recreate_swapchain = true;
+                        return;
+                    }
+                    Err(e) => panic!("Acquiring swapchain image resulted in panic: {}", e),
+                };
+            // Create command buffer
             let mut comm_builder = gc.create_command_builder();
             pipeline.begin_render(&mut comm_builder, image_id);
+            // Loop over all renderables, when there are more than 1
             mesh_vbo.issue_commands(&mut comm_builder);
             pipeline.end_render(&mut comm_builder);
+
             let comm_buffer = comm_builder.build().unwrap();
             if suboptimal {
                 recreate_swapchain = true;
@@ -442,7 +287,6 @@ fn main() {
                 .then_swapchain_present(queue.clone(), swapchain.clone(), image_id)
                 .then_signal_fence_and_flush();
 
-
             match exec {
                 Ok(future) => {
                     future.wait(None).unwrap();
@@ -450,12 +294,12 @@ fn main() {
                 Err(FlushError::OutOfDate) => {
                     recreate_swapchain = true;
                 }
-                Err(e) => panic!("Panic on flush: {}", e)
+                Err(e) => panic!("Panic on flush: {}", e),
             }
             let time_elapsed = current_time.elapsed().as_micros();
             // println!("FPS: {}, branch time: {} µs, pre-fence init time: {} µs", 1000000 / time_elapsed, branch_start_time.elapsed().as_micros(), branch_duration_prefence);
             current_time = std::time::Instant::now();
-        },
-        _ => {},
+        }
+        _ => {}
     });
 }
