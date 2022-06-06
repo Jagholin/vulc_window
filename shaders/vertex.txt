@@ -7,6 +7,6 @@ layout(location = 0) out vec3 color;
 
 void main() {
     color = 0.5 * (normal + vec3(1.0));
-    float posz = 0.5 * (position.z + 1.0);
-    gl_Position = vec4(position.xy, posz, 1.0);
+    // float posz = 0.5 * (position.z + 1.0);
+    gl_Position = vec4(position.xyz, 1.0);
 }

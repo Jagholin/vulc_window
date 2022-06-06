@@ -8,15 +8,18 @@ mod vertex_type;
 mod mesh;
 mod graphics_context;
 mod fbx;
+mod pipeline;
 
 use graphics_context::GraphicsContext;
 use vertex_type::VertexStruct;
 use image::{ImageBuffer, Rgba};
 use logger::Logger;
 use renderer::{VertexBufferRenderer, IssueCommands};
+use pipeline::{StandardVulcanPipeline, FramebufferFrameSwapper};
 use vulkano::pipeline::GraphicsPipeline;
+use vulkano::pipeline::graphics::depth_stencil::DepthStencilState;
 use std::sync::Arc;
-use vulkano::image::ImageViewAbstract;
+use vulkano::image::{ImageViewAbstract, ImageFormatInfo};
 use vulkano::shader::ShaderModule;
 use mesh::Mesh;
 
@@ -28,7 +31,7 @@ use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo};
 use vulkano::format::{ClearValue, Format};
-use vulkano::image::{view::ImageView, ImageDimensions, ImageUsage, StorageImage, SwapchainImage};
+use vulkano::image::{view::ImageView, view::ImageViewCreateInfo, ImageDimensions, ImageUsage, StorageImage, SwapchainImage, AttachmentImage, ImageAspect};
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::pipeline::{compute::ComputePipeline, Pipeline, PipelineBindPoint};
 use vulkano::pipeline::graphics::{input_assembly::InputAssemblyState, vertex_input::BuffersDefinition, viewport::{Viewport, ViewportState}};
@@ -41,26 +44,6 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
 
 pub type StandardCommandBuilder = AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>;
-
-fn get_framebuffers(
-    images: &[Arc<SwapchainImage<Window>>],
-    render_pass: Arc<RenderPass>,
-) -> Vec<Arc<Framebuffer>> {
-    images
-        .iter()
-        .map(|image| {
-            let view = ImageView::new_default(image.clone()).unwrap();
-            Framebuffer::new(
-                render_pass.clone(),
-                FramebufferCreateInfo {
-                    attachments: vec![view],
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-        })
-        .collect::<Vec<_>>()
-}
 
 fn create_integer_buffer(device: Arc<Device>) -> Arc<CpuAccessibleBuffer<[i32]>> {
     let data_iter = 0..65536;
@@ -175,46 +158,6 @@ fn shader_pipeline_compute(
     (shader, pipeline)
 }
 
-fn shader_pipeline_graphics(
-    gc: &GraphicsContext,
-    vs: Arc<ShaderModule>,
-    fs: Arc<ShaderModule>,
-    format: Format,
-    dimensions: [f32; 2]
-) -> (Arc<RenderPass>, Arc<GraphicsPipeline>) {
-    let viewport = Viewport {
-        origin: [0.0, 0.0],
-        dimensions,
-        depth_range: 0.0..1.0
-    };
-
-    let render_pass = vulkano::single_pass_renderpass!(gc.device.clone(),
-        attachments: {
-            color: {
-                load: Clear,
-                store: Store,
-                format: format,
-                samples: 1,
-            }
-        },
-        pass: {
-            color: [color],
-            depth_stencil: {}
-        }
-    ).unwrap();
-
-    let pipeline = GraphicsPipeline::start()
-        .vertex_input_state(BuffersDefinition::new().vertex::<VertexStruct>())
-        .vertex_shader(vs.entry_point("main").unwrap(), ())
-        .input_assembly_state(InputAssemblyState::new())
-        .viewport_state(ViewportState::viewport_fixed_scissor_irrelevant([viewport]))
-        .fragment_shader(fs.entry_point("main").unwrap(), ())
-        .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-        .build(gc.device.clone())
-        .unwrap();
-    (render_pass, pipeline)
-}
-
 fn compute_context(device: Arc<Device>, queue: Arc<Queue>) -> GraphicsContext {
     GraphicsContext::new(device, queue)
 }
@@ -226,22 +169,35 @@ fn graphics_context(device: Arc<Device>, queue: Arc<Queue>) -> GraphicsContext {
 // todo: extract VBOs somewhere else - they are not needed here
 
 /// This function initiates framebuffers, renderbuffers and pipeline
-fn prepare_graphics(device: Arc<Device>, 
-    queue: Arc<Queue>, 
-    mesh: & Mesh,
+fn prepare_graphics(// device: Arc<Device>, 
+    // queue: Arc<Queue>, 
+    // mesh: & Mesh,
     //vbo: Arc<CpuAccessibleBuffer<[VertexStruct]>>, 
+    gc: &GraphicsContext,
     swapchain: Arc<Swapchain<Window>>, 
-    swapchain_images: &[Arc<SwapchainImage<Window>>], 
-    dimensions: [f32; 2]) -> Vec<VertexBufferRenderer<VertexStruct>> 
+    swapchain_images: impl IntoIterator<Item = Arc<SwapchainImage<Window>>>, 
+    depth_format: Format,
+    dimensions: [f32; 2]) -> (StandardVulcanPipeline, FramebufferFrameSwapper)
 {
-    let gc = graphics_context(device.clone(), queue.clone());
-    let vs = cs::load_vert_shader(device.clone()).unwrap();
-    let fs = cs::load_frag_shader(device.clone()).unwrap();
-    let (render_pass, pipeline) = shader_pipeline_graphics(&gc, vs, fs, swapchain.image_format(), dimensions);
-    // creating a framebuffer
-    let fbs = get_framebuffers(swapchain_images, render_pass.clone());
+    // let gc = graphics_context(device.clone(), queue.clone());
+    let vs = cs::load_vert_shader(gc.device.clone()).unwrap();
+    let fs = cs::load_frag_shader(gc.device.clone()).unwrap();
 
-    VertexBufferRenderer::new(&fbs, pipeline, mesh)
+    let mut frame_holder = FramebufferFrameSwapper::new();
+    let pipe = StandardVulcanPipeline::new().fs(fs)
+        .vs(vs)
+        .depth_format(depth_format)
+        .dimensions(dimensions)
+        .format(swapchain.image_format())
+        .images(swapchain_images)
+        .build(&gc, &mut frame_holder);
+
+    (pipe, frame_holder)
+    // let (render_pass, pipeline) = shader_pipeline_graphics(&gc, vs, fs, swapchain.image_format(), depth_format, dimensions);
+    // creating a framebuffer
+    // let fbs = get_framebuffers(&gc, swapchain_images, render_pass.clone(), depth_format, dimensions.map(|x| x as u32));
+
+    // VertexBufferRenderer::new(&fbs, pipeline, mesh)
 }
 
 fn perform_compute(device: Arc<Device>, queue: Arc<Queue>) {
@@ -321,7 +277,7 @@ fn main() {
         .build_vk_surface(&event_loop, instance.clone())
         .unwrap();
 
-    let (device, queue, caps, image_format) = {
+    let (device, queue, caps, image_format, depth_format) = {
         let device_extensions = DeviceExtensions {
             khr_swapchain: true,
             ..DeviceExtensions::none()
@@ -363,13 +319,26 @@ fn main() {
         let caps = physical_device
             .surface_capabilities(&surface, Default::default())
             .expect("Cant get device surface caps");
+        let image_formats = physical_device.surface_formats(&surface, Default::default()).unwrap();
+        let candidate_depth_formats = [Format::D32_SFLOAT, Format::D32_SFLOAT_S8_UINT, Format::D24_UNORM_S8_UINT, Format::D16_UNORM, Format::D16_UNORM_S8_UINT];
+        let depth_format = candidate_depth_formats.into_iter().find(|df| {
+            let props = physical_device.image_format_properties(ImageFormatInfo { 
+                format: Some(df.to_owned()), 
+                usage: ImageUsage::depth_stencil_attachment(), 
+                ..Default::default()
+            });
+            if let Ok(Some(value)) = props {
+                return true;
+            }
+            false
+        }).unwrap();
+        println!("Image formats for given surface found: {:?}", image_formats);
         let image_format = physical_device
             .surface_formats(&surface, Default::default())
             .unwrap()[0]
             .0;
-        (device, queue, caps, image_format)
+        (device, queue, caps, image_format, depth_format)
     };
-
     let gc = Arc::new(graphics_context(device.clone(), queue.clone()));
 
     let dimensions = surface.window().inner_size();
@@ -388,11 +357,14 @@ fn main() {
         },
     )
     .unwrap();
+    // ImageView::new(image, create_info)
 
-    let mut mesh = Mesh::from_vertex_vec(gc.clone(), vertex_data);
+    let mesh = Mesh::from_vertex_vec(gc.clone(), vertex_data);
+    let gc = graphics_context(device.clone(), queue.clone());
     // let vertex_buffer = mesh.vbo();
-    let mut command_builders = prepare_graphics(device.clone(), queue.clone(), &mesh, swapchain.clone(), &images,
-        [dimensions.width as f32, dimensions.height as f32]);
+    let (mut pipeline, mut frame_holder) = prepare_graphics(&gc, swapchain.clone(), images,
+        depth_format, [dimensions.width as f32, dimensions.height as f32]);
+    let mesh_vbo = VertexBufferRenderer::new(&mesh);
 
     //logger.log(format!("{:#?}\n", caps).as_str());
     logger.log("Cant see whats behind you\n");
@@ -439,8 +411,10 @@ fn main() {
 
                 if window_resized {
                     window_resized = false;
-                    command_builders = prepare_graphics(device.clone(), queue.clone(), &mesh, swapchain.clone(), &images,
-                        [dimensions.width as f32, dimensions.height as f32]);
+                    // command_builders = prepare_graphics(device.clone(), queue.clone(), &mesh, swapchain.clone(), images,
+                    //     depth_format, [dimensions.width as f32, dimensions.height as f32]);
+                    (pipeline, frame_holder) = prepare_graphics(&gc, swapchain.clone(), images,
+                        depth_format, [dimensions.width as f32, dimensions.height as f32]);
                 }
             }
             let (image_id, suboptimal, acquire_future) = match swapchain::acquire_next_image(swapchain.clone(), None) {
@@ -451,9 +425,11 @@ fn main() {
                 },
                 Err(e) => panic!("Acquiring swapchain image resulted in panic: {}", e),
             };
-            let comm_buffer = command_builders.get(image_id).unwrap();
+            // let comm_buffer = command_builders.get(image_id).unwrap();
             let mut comm_builder = gc.create_command_builder();
-            comm_buffer.issue_commands(&mut comm_builder);
+            pipeline.begin_render(&mut comm_builder, image_id);
+            mesh_vbo.issue_commands(&mut comm_builder);
+            pipeline.end_render(&mut comm_builder);
             let comm_buffer = comm_builder.build().unwrap();
             if suboptimal {
                 recreate_swapchain = true;
