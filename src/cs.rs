@@ -22,11 +22,16 @@ vulkano_shaders::shader! {
         },
         vert_shader: {
             ty: "vertex",
-            path: "shaders/vertex.txt"
+            path: "shaders/vertex.txt",
         },
         frag_shader: {
             ty: "fragment",
             path: "shaders/frag.txt"
         }
-    }
+    },
+    types_meta: {
+        use bytemuck::{Pod, Zeroable};
+
+        #[derive(Clone, Copy, Zeroable, Pod)]
+    },
 }

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::PrimaryAutoCommandBuffer;
 use vulkano::command_buffer::SubpassContents;
+use vulkano::descriptor_set::layout::DescriptorSetLayout;
 use vulkano::format::ClearValue;
 use vulkano::format::Format;
 use vulkano::image::{view::ImageView, view::ImageViewCreateInfo, AttachmentImage, SwapchainImage};
@@ -13,6 +14,7 @@ use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::pipeline::graphics::viewport::ViewportState;
 use vulkano::pipeline::GraphicsPipeline;
+use vulkano::pipeline::Pipeline;
 use vulkano::render_pass::Framebuffer;
 use vulkano::render_pass::{FramebufferCreateInfo, RenderPass, Subpass};
 use vulkano::shader::ShaderModule;
@@ -20,6 +22,7 @@ use winit::window::Window;
 // use std::sync::RwLock;
 
 use crate::graphics_context::GraphicsContext;
+use crate::uniforms::UniformStruct;
 use crate::vertex_type::VertexStruct;
 type StandardCommandBuilder = AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>;
 
@@ -174,10 +177,11 @@ fn get_framebuffers(
 }
 
 pub struct VulkanPipeline<T> {
-    pipeline: Arc<GraphicsPipeline>,
+    pub pipeline: Arc<GraphicsPipeline>,
     render_pass: Arc<RenderPass>,
     // framebuffers: Vec<Arc<Framebuffer>>,
     framebuffer_giver: T,
+    pre_renderers: Vec<Arc<dyn PreRenderingSteps>>,
 }
 
 pub struct VulkanPipelineBuilder<T> {
@@ -187,6 +191,10 @@ pub struct VulkanPipelineBuilder<T> {
     images: Option<T>,
     depth_format: Option<Format>,
     dimensions: Option<[f32; 2]>,
+}
+
+pub trait PreRenderingSteps {
+    fn pre_render(&self, pipe: Arc<GraphicsPipeline>, cb: &mut StandardCommandBuilder);
 }
 
 impl<T> VulkanPipelineBuilder<T>
@@ -259,6 +267,7 @@ where
             pipeline,
             render_pass,
             framebuffer_giver: fb_holder.framebuffer_giver(),
+            pre_renderers: vec![],
         }
     }
 }
@@ -278,7 +287,12 @@ where
         }
     }
 
-    pub fn begin_render(&self, command_builder: &mut StandardCommandBuilder, frameindex: usize) {
+    pub fn begin_render(
+        &self,
+        command_builder: &mut StandardCommandBuilder,
+        unis: &impl UniformStruct,
+        frameindex: usize,
+    ) {
         let fb = self.framebuffer_giver.give_framebuffer(frameindex);
         command_builder
             .begin_render_pass(
@@ -288,10 +302,23 @@ where
             )
             .unwrap()
             .bind_pipeline_graphics(self.pipeline.clone());
+        unis.apply_uniforms(command_builder);
+        for prer in self.pre_renderers.iter() {
+            prer.pre_render(self.pipeline.clone(), command_builder);
+        }
     }
 
     pub fn end_render(&self, command_builder: &mut StandardCommandBuilder) {
         command_builder.end_render_pass().unwrap();
+    }
+
+    pub fn pipeline_descriptor(&self) -> &[Arc<DescriptorSetLayout>] {
+        let l = self.pipeline.layout();
+        l.set_layouts()
+    }
+
+    pub fn add_prerender(&mut self, pr: Arc<dyn PreRenderingSteps>) {
+        self.pre_renderers.push(pr);
     }
 }
 

@@ -8,6 +8,7 @@ mod logger;
 mod mesh;
 mod pipeline;
 mod renderer;
+mod uniforms;
 mod vertex_type;
 
 use graphics_context::GraphicsContext;
@@ -16,7 +17,14 @@ use mesh::Mesh;
 use pipeline::{FramebufferFrameSwapper, StandardVulcanPipeline};
 use renderer::{IssueCommands, VertexBufferRenderer};
 use std::sync::Arc;
+use uniforms::UniformHolder;
+use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer};
+use vulkano::descriptor_set::layout::{
+    DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType,
+};
+use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
 use vulkano::image::ImageFormatInfo;
+use vulkano::shader::ShaderStages;
 
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, PrimaryAutoCommandBuffer, PrimaryCommandBuffer,
@@ -61,7 +69,7 @@ fn prepare_graphics(
     swapchain_images: impl IntoIterator<Item = Arc<SwapchainImage<Window>>>,
     depth_format: Format,
     dimensions: [f32; 2],
-) -> (StandardVulcanPipeline, FramebufferFrameSwapper) {
+) -> (StandardVulcanPipeline, UniformHolder) {
     let vs = cs::load_vert_shader(gc.device.clone()).unwrap();
     let fs = cs::load_frag_shader(gc.device.clone()).unwrap();
 
@@ -75,7 +83,9 @@ fn prepare_graphics(
         .images(swapchain_images)
         .build(&gc, &mut frame_holder);
 
-    (pipe, frame_holder)
+    let uniholder = UniformHolder::new(gc, pipe.pipeline.clone());
+
+    (pipe, uniholder)
 }
 
 fn main() {
@@ -193,7 +203,7 @@ fn main() {
     let mesh = Mesh::from_vertex_vec(gc.clone(), vertex_data);
     let gc = graphics_context(device.clone(), queue.clone());
     // let vertex_buffer = mesh.vbo();
-    let (mut pipeline, _) = prepare_graphics(
+    let (mut pipeline, mut uniform_holder) = prepare_graphics(
         &gc,
         swapchain.clone(),
         images,
@@ -250,7 +260,7 @@ fn main() {
                     window_resized = false;
                     // command_builders = prepare_graphics(device.clone(), queue.clone(), &mesh, swapchain.clone(), images,
                     //     depth_format, [dimensions.width as f32, dimensions.height as f32]);
-                    (pipeline, _) = prepare_graphics(
+                    (pipeline, uniform_holder) = prepare_graphics(
                         &gc,
                         swapchain.clone(),
                         images,
@@ -270,7 +280,7 @@ fn main() {
                 };
             // Create command buffer
             let mut comm_builder = gc.create_command_builder();
-            pipeline.begin_render(&mut comm_builder, image_id);
+            pipeline.begin_render(&mut comm_builder, &uniform_holder, image_id);
             // Loop over all renderables, when there are more than 1
             mesh_vbo.issue_commands(&mut comm_builder);
             pipeline.end_render(&mut comm_builder);
