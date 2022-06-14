@@ -14,4 +14,4 @@ winit = "0.26.1"
 image = "0.24.2"
 fbxcel-dom = "0.0.7"
 anyhow = "1.0.57"
-mint = "0.5.9"
+cgmath = {version = "0.18", features = ["swizzle"]}

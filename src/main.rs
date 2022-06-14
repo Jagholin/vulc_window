@@ -18,20 +18,15 @@ use pipeline::{FramebufferFrameSwapper, StandardVulcanPipeline};
 use renderer::{IssueCommands, VertexBufferRenderer};
 use std::sync::Arc;
 use uniforms::UniformHolder;
-use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer};
-use vulkano::descriptor_set::layout::{
-    DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType,
-};
-use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
-use vulkano::image::ImageFormatInfo;
-use vulkano::shader::ShaderStages;
 
+use cgmath::prelude::*;
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, PrimaryAutoCommandBuffer, PrimaryCommandBuffer,
 };
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo};
 use vulkano::format::Format;
+use vulkano::image::ImageFormatInfo;
 use vulkano::image::{ImageUsage, SwapchainImage};
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::swapchain::{
@@ -86,6 +81,20 @@ fn prepare_graphics(
     let uniholder = UniformHolder::new(gc, pipe.pipeline.clone());
 
     (pipe, uniholder)
+}
+
+fn matrix_from_time(passed: std::time::Duration) -> cgmath::Matrix4<f32> {
+    const DISTANCE: f32 = 1.5;
+
+    let time_factor = passed.as_millis() as f32 / 1000.0;
+    let x_coord = time_factor.sin() * DISTANCE;
+    let y_coord = time_factor.cos() * DISTANCE;
+
+    cgmath::Matrix4::look_at_rh(
+        [x_coord, y_coord, DISTANCE].into(),
+        [0.0, 0.0, 0.7].into(),
+        [0.0, 0.0, 1.0].into(),
+    )
 }
 
 fn main() {
@@ -184,6 +193,12 @@ fn main() {
 
     let dimensions = surface.window().inner_size();
     let composite_alpha = caps.supported_composite_alpha.iter().next().unwrap();
+    let mut persp_matrix = cgmath::perspective(
+        cgmath::Deg(60.0),
+        dimensions.width as f32 / dimensions.height as f32,
+        0.001,
+        1000.0,
+    );
 
     let (mut swapchain, images) = Swapchain::new(
         device.clone(),
@@ -219,7 +234,7 @@ fn main() {
     let mut recreate_swapchain = false;
     let mut window_minimized = false;
 
-    let mut current_time = std::time::Instant::now();
+    let current_time = std::time::Instant::now();
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
@@ -255,6 +270,12 @@ fn main() {
                     Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
                 };
                 swapchain = new_swapchain;
+                persp_matrix = cgmath::perspective(
+                    cgmath::Deg(60.0),
+                    dimensions.width as f32 / dimensions.height as f32,
+                    0.001,
+                    1000.0,
+                );
 
                 if window_resized {
                     window_resized = false;
@@ -279,6 +300,8 @@ fn main() {
                     Err(e) => panic!("Acquiring swapchain image resulted in panic: {}", e),
                 };
             // Create command buffer
+            let matrix = persp_matrix * matrix_from_time(current_time.elapsed());
+            uniform_holder.set_view_matrix(matrix.into());
             let mut comm_builder = gc.create_command_builder();
             pipeline.begin_render(&mut comm_builder, &uniform_holder, image_id);
             // Loop over all renderables, when there are more than 1
@@ -308,7 +331,7 @@ fn main() {
             }
             let time_elapsed = current_time.elapsed().as_micros();
             // println!("FPS: {}, branch time: {} µs, pre-fence init time: {} µs", 1000000 / time_elapsed, branch_start_time.elapsed().as_micros(), branch_duration_prefence);
-            current_time = std::time::Instant::now();
+            // current_time = std::time::Instant::now();
         }
         _ => {}
     });

@@ -7,90 +7,9 @@ use fbxcel_dom::v7400::data::mesh::{PolygonVertex, PolygonVertexIndex, PolygonVe
 use fbxcel_dom::v7400::object::{geometry::TypedGeometryHandle, TypedObjectHandle};
 use std::fs::File;
 use std::io::{BufReader, Write};
-use std::ops::Sub;
-
-// lets extract polygon data from vertex index stream
-trait Vector3 {
-    type ScalarType;
-    fn from_v(x: Self::ScalarType, y: Self::ScalarType, z: Self::ScalarType) -> Self
-    where
-        Self: Sized;
-    fn cross_product(&self, rhs: &Self) -> Self
-    where
-        Self: Sized;
-    fn dot_product(&self, rhs: &Self) -> Self::ScalarType
-    where
-        Self: Sized;
-    fn x(&self) -> Self::ScalarType;
-    fn y(&self) -> Self::ScalarType;
-    fn z(&self) -> Self::ScalarType;
-    fn diff(&self, rhs: &Self) -> Self
-    where
-        Self: Sized,
-        Self::ScalarType: Sub<Output = Self::ScalarType>,
-    {
-        Self::from_v(self.x() - rhs.x(), self.y() - rhs.y(), self.z() - rhs.z())
-    }
-}
-
-impl Vector3 for (f32, f32, f32) {
-    type ScalarType = f32;
-    fn cross_product(&self, rhs: &Self) -> Self {
-        (
-            self.1 * rhs.2 - self.2 * rhs.1,
-            self.2 * rhs.0 - self.0 * rhs.2,
-            self.0 * rhs.1 - self.1 * rhs.0,
-        )
-    }
-    fn dot_product(&self, rhs: &Self) -> Self::ScalarType {
-        self.0 * rhs.0 + self.1 * rhs.1 + self.2 * rhs.2
-    }
-    fn x(&self) -> Self::ScalarType {
-        self.0
-    }
-    fn y(&self) -> Self::ScalarType {
-        self.1
-    }
-    fn z(&self) -> Self::ScalarType {
-        self.2
-    }
-    fn from_v(x: Self::ScalarType, y: Self::ScalarType, z: Self::ScalarType) -> Self {
-        (x, y, z)
-    }
-}
-
-impl Vector3 for [f32; 3] {
-    type ScalarType = f32;
-    fn cross_product(&self, rhs: &Self) -> Self {
-        [
-            self[1] * rhs[2] - self[2] * rhs[1],
-            self[2] * rhs[0] - self[0] * rhs[2],
-            self[0] * rhs[1] - self[1] * rhs[0],
-        ]
-    }
-    fn dot_product(&self, rhs: &Self) -> Self::ScalarType {
-        self.iter()
-            .zip(rhs.iter())
-            .map(|(x, y)| x * y)
-            .fold(0.0, |acc, val| acc + val)
-    }
-    fn x(&self) -> Self::ScalarType {
-        self[0]
-    }
-    fn y(&self) -> Self::ScalarType {
-        self[1]
-    }
-    fn z(&self) -> Self::ScalarType {
-        self[2]
-    }
-    fn from_v(x: Self::ScalarType, y: Self::ScalarType, z: Self::ScalarType) -> Self {
-        [x, y, z]
-    }
-}
-
-fn vector_len(vec: [f32; 3]) -> f32 {
-    vec.dot_product(&vec).sqrt()
-}
+// use std::ops::Sub;
+use cgmath::Point3;
+use cgmath::{prelude::*, Point2, Quaternion, Vector3};
 
 // we know that T is some T: Iterator<Item=PolygonVertex>
 struct PolygonIteratorImpl<T> {
@@ -150,7 +69,151 @@ where
     }
 }
 
-fn triangulate_quads(
+// needs T::Item to be Clone, otherwise can't hold previous items for next calls to next()
+struct TriplesIterator<'a, T> {
+    inner_iter: Option<Box<dyn Iterator<Item = T> + 'a>>, // Option just so we have Default value for mem::take
+    prev_item: Option<T>,
+    pprev_item: Option<T>,
+    first_call: bool,
+}
+
+impl<'a, T> Iterator for TriplesIterator<'a, T>
+where
+    T: Clone + 'a,
+{
+    type Item = (T, T, T);
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pprev_item.is_none() {
+            self.pprev_item = self.inner_iter.as_mut().unwrap().next().clone();
+        }
+        if self.prev_item.is_none() {
+            self.prev_item = self.inner_iter.as_mut().unwrap().next().clone();
+        }
+        let (pprev, prev) = (self.pprev_item.clone(), self.prev_item.clone());
+        match (pprev, prev) {
+            (None, _) | (_, None) => None,
+            (Some(pprev), Some(prev)) => {
+                let next_item = self.inner_iter.as_mut().unwrap().next();
+                if let Some(next_item) = next_item {
+                    if self.first_call {
+                        let my_iter = std::mem::take(&mut self.inner_iter).unwrap();
+                        let my_iter = Box::new(my_iter.chain([pprev.clone(), prev.clone()]));
+                        self.inner_iter = Some(my_iter);
+
+                        self.first_call = false;
+                    }
+                    self.pprev_item = self.prev_item.clone();
+                    self.prev_item = Some(next_item.clone());
+                    Some((pprev.clone(), prev.clone(), next_item))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+trait IntoTriples {
+    fn into_triples<'a>(self) -> TriplesIterator<'a, Self::Item>
+    where
+        Self: Iterator + Sized + 'a;
+}
+
+impl<T> IntoTriples for T
+where
+    T: Iterator,
+{
+    fn into_triples<'a>(self) -> TriplesIterator<'a, T::Item>
+    where
+        T: 'a,
+    {
+        let b = Box::new(self);
+        TriplesIterator {
+            inner_iter: Some(b),
+            prev_item: None,
+            pprev_item: None,
+            first_call: true,
+        }
+    }
+}
+
+// calculates whether v is inside a triangle specified by (p1, p2, p3)
+// by calculating its barycenter coordinates
+fn inside_triangle(v: Point2<f64>, p1: Point2<f64>, p2: Point2<f64>, p3: Point2<f64>) -> bool {
+    let df = -p1.y * p2.x + p1.x * p2.y + p1.y * p3.x - p2.y * p3.x - p1.x * p3.y + p2.x * p3.y;
+    // barycentric coordinates of v... almost
+    // we only need the sign, so we don't divide by determinant
+    let s = (p2.x * p3.y - p2.y * p3.x) / df + v.x * (p2.y - p3.y) / df + v.y * (p3.x - p2.x) / df;
+    let u = (p1.y * p3.x - p1.x * p3.y) / df + v.x * (p3.y - p1.y) / df + v.y * (p1.x - p3.x) / df;
+    let t = 1.0 - s - u;
+
+    println!("s {}, u {}, t {}", s, u, t);
+
+    // if point is inside and determinant is positive, all signs will be +
+    // if point is inside, but determinant is negative, all signs will be -
+    let all_pos = s > 0.0 && u > 0.0 && t > 0.0;
+    let all_neg = s < 0.0 && u < 0.0 && t < 0.0;
+
+    let res = all_pos || all_neg;
+    if res {
+        println!(
+            "{:?} is inside {:?}, {:?}, {:?}, pos {}, neg {}",
+            v, p1, p2, p3, all_pos, all_neg
+        );
+    }
+    res
+}
+
+fn ear_clipping(
+    mut verts: Vec<(PolygonVertexIndex, Point2<f64>)>,
+) -> Vec<[(PolygonVertexIndex, Point2<f64>); 3]> {
+    let mut result = vec![];
+    // let mut ears = vec![];
+    loop {
+        let mut ear_index = None;
+        for triple in verts.iter().copied().into_triples() {
+            let ((_, p1), ear @ (ix, p2), (_, p3)) = triple;
+            let ab = p2 - p1;
+            let bc = p3 - p2;
+            let angle = ab.angle(bc);
+            if angle.0 < 0.0 {
+                // we have a reflex vertex here, cant be an ear
+                continue;
+            }
+            if verts
+                .iter()
+                .any(|(_, v)| inside_triangle(v.clone(), p1, p2, p3))
+            {
+                // not an ear
+                continue;
+            }
+            result.push([triple.0, triple.1, triple.2]);
+            ear_index = Some(ix);
+            break;
+        }
+        // Its OK to panic, because if it is None, there is a problem with the algorithm
+        let ear_index = ear_index.expect("Couldnt find an ear for some reason");
+        verts.retain(|(i, _)| *i != ear_index);
+        if verts.len() == 3 {
+            break;
+        }
+    }
+    // add the last triangle
+    result.push([verts[0], verts[1], verts[2]]);
+    result
+}
+
+fn polygon_winding(verts: impl Iterator<Item = Point2<f64>>) -> cgmath::Rad<f64> {
+    let mut result = cgmath::Rad(0.0);
+    for (p1, p2, p3) in verts.into_triples() {
+        let ab = p2 - p1;
+        let bc = p3 - p2;
+        result += ab.angle(bc);
+    }
+    result
+}
+
+fn triangulate_ngon(
     verts: &PolygonVertices,
     pvis: &[PolygonVertexIndex],
     out: &mut Vec<[PolygonVertexIndex; 3]>,
@@ -158,7 +221,7 @@ fn triangulate_quads(
     let mut points = Vec::new();
     for ba in pvis {
         let v = verts.control_point(ba).unwrap();
-        let point = [v.x as f32, v.y as f32, v.z as f32];
+        let point: Point3<f64> = cgmath::point3(v.x, v.y, v.z);
         points.push(IndexedPoint {
             point,
             index: ba.to_owned(),
@@ -185,9 +248,9 @@ fn triangulate_quads(
             .iter()
             .min_by(|c1, c2| {
                 let area_lhs = cross_area(c1.0.map(|x| points[x].point))
-                    + triangle_area(c1.1.map(|x| points[x].point));
+                    + cross_area(c1.1.map(|x| points[x].point));
                 let area_rhs = cross_area(c2.0.map(|x| points[x].point))
-                    + triangle_area(c2.1.map(|x| points[x].point));
+                    + cross_area(c2.1.map(|x| points[x].point));
                 area_lhs.partial_cmp(&area_rhs).unwrap()
             })
             .unwrap();
@@ -195,7 +258,39 @@ fn triangulate_quads(
         out.push(minimal_tri.1.map(|x| points[x].index));
     } else {
         // return Err(TriangulateError{}.into());
-        bail!("Triangulation of polygons with #verts > 4 is not supported yet");
+        // bail!("Triangulation of polygons with #verts > 4 is not supported yet");
+        // 1. find th normal by making cross product
+        let mut norm = Vector3::new(0.0, 0.0, 0.0);
+        for (p1, p2, p3) in points.iter().into_triples() {
+            let ab = p2.point - p1.point;
+            let bc = p3.point - p2.point;
+            norm += ab.cross(bc);
+        }
+        let norm = norm.normalize();
+        // 2. Create orthonormal basis by finding such rotation R that Rn = z
+        let rot = Quaternion::between_vectors(Vector3::unit_z(), norm);
+        let axis_i = rot.rotate_vector(Vector3::unit_x());
+        let axis_j = rot.rotate_vector(Vector3::unit_y());
+        // Make sure that {i,j,k} is indeed an orthonormal basis in R3
+        assert!(axis_i.dot(norm).abs() < 0.002);
+        assert!(axis_j.dot(norm).abs() < 0.002);
+        assert!(axis_i.dot(axis_j).abs() < 0.002);
+        assert!((axis_i.magnitude2() - 1.0).abs() < 0.002);
+        assert!((axis_j.magnitude2() - 1.0).abs() < 0.002);
+        // 3. Create points projected into 2d plane given by {i, j}
+        let projected_points: Vec<_> = points
+            .iter()
+            .map(|p| {
+                (
+                    p.index,
+                    Point2::new(p.point.dot(axis_i), p.point.dot(axis_j)),
+                )
+            })
+            .collect();
+        let clipped = ear_clipping(projected_points);
+        for ps in clipped.into_iter() {
+            out.push([ps[0].0, ps[1].0, ps[2].0]);
+        }
     }
     Ok(())
 }
@@ -205,40 +300,10 @@ struct IndexedPoint<I, T> {
     index: I,
 }
 
-impl<I, T> IndexedPoint<I, T> {
-    fn get_index(&self) -> &I {
-        &self.index
-    }
-    fn get_point(&self) -> &T {
-        &self.point
-    }
-}
-
-fn triangle_area(tris: [[f32; 3]; 3]) -> f32 {
-    let a = tris[0];
-    let b = tris[1];
-    let c = tris[2];
-    let ab: Vec<f32> = a
-        .into_iter()
-        .zip(b.into_iter())
-        .map(|(x, y)| y - x)
-        .collect();
-    let ac: Vec<f32> = a
-        .into_iter()
-        .zip(c.into_iter())
-        .map(|(x, y)| y - x)
-        .collect();
-    let len_ab = (ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2]).sqrt();
-    let len_ac = (ac[0] * ac[0] + ac[1] * ac[1] + ac[2] * ac[2]).sqrt();
-    let cos_phi = (ab[0] * ac[0] + ab[1] * ac[1] + ab[2] * ac[2]) / (len_ab * len_ac);
-    let sin_phi = (1.0 - cos_phi * cos_phi).sqrt();
-    0.5 * len_ab * len_ac * sin_phi
-}
-
-fn cross_area(tris: [[f32; 3]; 3]) -> f32 {
-    let ab = tris[1].diff(&tris[0]);
-    let ac = tris[2].diff(&tris[0]);
-    vector_len(ab.cross_product(&ac))
+fn cross_area<T: cgmath::BaseNum + cgmath::num_traits::Float>(tris: [Point3<T>; 3]) -> T {
+    let ab = tris[1] - tris[0];
+    let ac = tris[2] - tris[0];
+    ab.cross(ac).magnitude()
 }
 
 pub fn read_fbx_document(
@@ -266,7 +331,7 @@ pub fn read_fbx_document(
                 {
                     // iterate over polygons
                     let vertices = mesh.polygon_vertices().unwrap();
-                    let triangulated_verts = vertices.triangulate_each(triangulate_quads).unwrap();
+                    let triangulated_verts = vertices.triangulate_each(triangulate_ngon).unwrap();
 
                     let mut counter = 1;
                     let normals_data = mesh
@@ -300,5 +365,75 @@ pub fn read_fbx_document(
         _ => {
             bail!("Unexpected FBX version");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::f64::consts::PI;
+
+    use cgmath::{InnerSpace, Point2, Vector2};
+
+    use super::{inside_triangle, IntoTriples};
+
+    #[test]
+    fn empty_iterator() {
+        let iter_arr: [usize; 0] = [];
+        let mut iter = iter_arr.iter().into_triples();
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn iterate_small_array() {
+        let iter_arr: [usize; 1] = [1];
+        let mut iter = iter_arr.iter().into_triples();
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
+        let iter_arr: [usize; 2] = [1, 2];
+        let mut iter = iter_arr.iter().into_triples();
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn single_element() {
+        let iter_arr: [usize; 3] = [1, 2, 3];
+        let mut iter = iter_arr.iter().into_triples();
+        assert_eq!(iter.next(), Some((&1, &2, &3)));
+        assert_eq!(iter.next(), Some((&2, &3, &1)));
+        assert_eq!(iter.next(), Some((&3, &1, &2)));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn more_elements() {
+        let iter_arr: [usize; 5] = [1, 2, 3, 4, 5];
+        let mut iter = iter_arr.iter().into_triples();
+        assert_eq!(iter.next(), Some((&1, &2, &3)));
+        assert_eq!(iter.next(), Some((&2, &3, &4)));
+        assert_eq!(iter.next(), Some((&3, &4, &5)));
+        assert_eq!(iter.next(), Some((&4, &5, &1)));
+        assert_eq!(iter.next(), Some((&5, &1, &2)));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn angle_test() {
+        let p1: Vector2<f64> = Vector2::new(1.0, -1.0);
+        let p2: Vector2<f64> = Vector2::new(1.0, 1.0);
+        let p3: Vector2<f64> = Vector2::new(2.0, 2.0);
+        let ab = p2 - p1;
+        let bc = p3 - p2;
+        assert_eq!(ab.angle(bc).0, -PI / 4.0)
+    }
+
+    #[test]
+    fn strange_triangle() {
+        let p1 = Point2::new(0.4434109926223753, -0.21228843927383423);
+        let p2 = Point2::new(0.7315716743469237, 0.061153948307037354);
+        let p3 = Point2::new(0.8538796901702879, 0.061153948307037354);
+        let p4 = Point2::new(0.988878011703491, 0.21228837966918945);
+        assert!(!inside_triangle(p1, p2, p3, p4));
     }
 }

@@ -12,5 +12,7 @@ layout(binding = 0) uniform MatBlock {
 void main() {
     color = 0.5 * (normal + vec3(1.0));
     // float posz = 0.5 * (position.z + 1.0);
-    gl_Position = matrices.view_matrix * vec4(position.xyz, 1.0);
+    vec4 pos = matrices.view_matrix * vec4(position.xyz, 1.0);
+    pos.y *= -1;
+    gl_Position = pos;
 }
