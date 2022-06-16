@@ -17,6 +17,7 @@ use mesh::Mesh;
 use pipeline::{FramebufferFrameSwapper, StandardVulcanPipeline};
 use renderer::{IssueCommands, VertexBufferRenderer};
 use std::sync::Arc;
+use std::sync::atomic::fence;
 use uniforms::UniformHolder;
 
 use cgmath::prelude::*;
@@ -32,6 +33,7 @@ use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::swapchain::{
     self, AcquireError, Swapchain, SwapchainCreateInfo, SwapchainCreationError,
 };
+use vulkano::sync::FenceSignalFuture;
 use vulkano::sync::{self, FlushError, GpuFuture};
 use vulkano_win::VkSurfaceBuild;
 use winit::event::{Event, WindowEvent};
@@ -218,6 +220,10 @@ fn main() {
     let mesh = Mesh::from_vertex_vec(gc.clone(), vertex_data);
     let gc = graphics_context(device.clone(), queue.clone());
     // let vertex_buffer = mesh.vbo();
+    let mut fences_in_flight: Vec<Option<FenceSignalFuture<_>>> = Vec::with_capacity(images.len());
+    for i in 0..images.len() {
+        fences_in_flight.push(None);
+    }
     let (mut pipeline, mut uniform_holder) = prepare_graphics(
         &gc,
         swapchain.clone(),
@@ -235,6 +241,7 @@ fn main() {
     let mut window_minimized = false;
 
     let current_time = std::time::Instant::now();
+
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
@@ -299,11 +306,20 @@ fn main() {
                     }
                     Err(e) => panic!("Acquiring swapchain image resulted in panic: {}", e),
                 };
+            // get the future associated with the image id
+            // can unwrap safely because image index is within this vector by construction
+            if let Some(previous_future) = std::mem::take(fences_in_flight.get_mut(image_id).unwrap()) {
+                // previous_future.cleanup_finished();
+                // TODO: what do we do on flush error here if it ever happens?
+                // for now we just panic
+                previous_future.wait(None).unwrap();
+            }
+            
             // Create command buffer
             let matrix = persp_matrix * matrix_from_time(current_time.elapsed());
-            uniform_holder.set_view_matrix(matrix.into());
+            let uniform_set = uniform_holder.set_view_matrix(matrix.into());
             let mut comm_builder = gc.create_command_builder();
-            pipeline.begin_render(&mut comm_builder, &uniform_holder, image_id);
+            pipeline.begin_render(&mut comm_builder, &uniform_set, image_id);
             // Loop over all renderables, when there are more than 1
             mesh_vbo.issue_commands(&mut comm_builder);
             pipeline.end_render(&mut comm_builder);
@@ -322,7 +338,9 @@ fn main() {
 
             match exec {
                 Ok(future) => {
-                    future.wait(None).unwrap();
+                    // fences_in_flight.push(Some(future));
+                    fences_in_flight[image_id] = Some(future);
+                    // future.wait(None).unwrap();
                 }
                 Err(FlushError::OutOfDate) => {
                     recreate_swapchain = true;

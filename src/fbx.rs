@@ -7,7 +7,6 @@ use fbxcel_dom::v7400::data::mesh::{PolygonVertex, PolygonVertexIndex, PolygonVe
 use fbxcel_dom::v7400::object::{geometry::TypedGeometryHandle, TypedObjectHandle};
 use std::fs::File;
 use std::io::{BufReader, Write};
-// use std::ops::Sub;
 use cgmath::Point3;
 use cgmath::{prelude::*, Point2, Quaternion, Vector3};
 
@@ -99,7 +98,7 @@ where
                         let my_iter = std::mem::take(&mut self.inner_iter).unwrap();
                         let my_iter = Box::new(my_iter.chain([pprev.clone(), prev.clone()]));
                         self.inner_iter = Some(my_iter);
-
+                        
                         self.first_call = false;
                     }
                     self.pprev_item = self.prev_item.clone();
@@ -141,27 +140,19 @@ where
 // by calculating its barycenter coordinates
 fn inside_triangle(v: Point2<f64>, p1: Point2<f64>, p2: Point2<f64>, p3: Point2<f64>) -> bool {
     let df = -p1.y * p2.x + p1.x * p2.y + p1.y * p3.x - p2.y * p3.x - p1.x * p3.y + p2.x * p3.y;
-    // barycentric coordinates of v... almost
-    // we only need the sign, so we don't divide by determinant
+    // barycentric coordinates of v
     let s = (p2.x * p3.y - p2.y * p3.x) / df + v.x * (p2.y - p3.y) / df + v.y * (p3.x - p2.x) / df;
     let u = (p1.y * p3.x - p1.x * p3.y) / df + v.x * (p3.y - p1.y) / df + v.y * (p1.x - p3.x) / df;
     let t = 1.0 - s - u;
 
-    println!("s {}, u {}, t {}", s, u, t);
+    // println!("s {}, u {}, t {}", s, u, t);
 
     // if point is inside and determinant is positive, all signs will be +
     // if point is inside, but determinant is negative, all signs will be -
     let all_pos = s > 0.0 && u > 0.0 && t > 0.0;
     let all_neg = s < 0.0 && u < 0.0 && t < 0.0;
 
-    let res = all_pos || all_neg;
-    if res {
-        println!(
-            "{:?} is inside {:?}, {:?}, {:?}, pos {}, neg {}",
-            v, p1, p2, p3, all_pos, all_neg
-        );
-    }
-    res
+    all_pos || all_neg
 }
 
 fn ear_clipping(
@@ -169,10 +160,12 @@ fn ear_clipping(
 ) -> Vec<[(PolygonVertexIndex, Point2<f64>); 3]> {
     let mut result = vec![];
     // let mut ears = vec![];
+    // TODO: this can be optimized, but for now it's good enough(also it works)
+    // we assume there aren't many ngons in our models, as they will mostly consisit of quads
     loop {
         let mut ear_index = None;
         for triple in verts.iter().copied().into_triples() {
-            let ((_, p1), ear @ (ix, p2), (_, p3)) = triple;
+            let ((ix1, p1), ear @ (ix, p2), (ix2, p3)) = triple;
             let ab = p2 - p1;
             let bc = p3 - p2;
             let angle = ab.angle(bc);
@@ -182,6 +175,7 @@ fn ear_clipping(
             }
             if verts
                 .iter()
+                .filter(|(index, _)| *index != ix1 && *index != ix && *index != ix2 )
                 .any(|(_, v)| inside_triangle(v.clone(), p1, p2, p3))
             {
                 // not an ear
@@ -257,8 +251,7 @@ fn triangulate_ngon(
         out.push(minimal_tri.0.map(|x| points[x].index));
         out.push(minimal_tri.1.map(|x| points[x].index));
     } else {
-        // return Err(TriangulateError{}.into());
-        // bail!("Triangulation of polygons with #verts > 4 is not supported yet");
+
         // 1. find th normal by making cross product
         let mut norm = Vector3::new(0.0, 0.0, 0.0);
         for (p1, p2, p3) in points.iter().into_triples() {
@@ -267,16 +260,18 @@ fn triangulate_ngon(
             norm += ab.cross(bc);
         }
         let norm = norm.normalize();
+
         // 2. Create orthonormal basis by finding such rotation R that Rn = z
         let rot = Quaternion::between_vectors(Vector3::unit_z(), norm);
         let axis_i = rot.rotate_vector(Vector3::unit_x());
         let axis_j = rot.rotate_vector(Vector3::unit_y());
         // Make sure that {i,j,k} is indeed an orthonormal basis in R3
-        assert!(axis_i.dot(norm).abs() < 0.002);
-        assert!(axis_j.dot(norm).abs() < 0.002);
-        assert!(axis_i.dot(axis_j).abs() < 0.002);
-        assert!((axis_i.magnitude2() - 1.0).abs() < 0.002);
-        assert!((axis_j.magnitude2() - 1.0).abs() < 0.002);
+        debug_assert!(axis_i.dot(norm).abs() < 0.002);
+        debug_assert!(axis_j.dot(norm).abs() < 0.002);
+        debug_assert!(axis_i.dot(axis_j).abs() < 0.002);
+        debug_assert!((axis_i.magnitude2() - 1.0).abs() < 0.002);
+        debug_assert!((axis_j.magnitude2() - 1.0).abs() < 0.002);
+        
         // 3. Create points projected into 2d plane given by {i, j}
         let projected_points: Vec<_> = points
             .iter()
@@ -333,7 +328,7 @@ pub fn read_fbx_document(
                     let vertices = mesh.polygon_vertices().unwrap();
                     let triangulated_verts = vertices.triangulate_each(triangulate_ngon).unwrap();
 
-                    let mut counter = 1;
+                    // let mut counter = 1;
                     let normals_data = mesh
                         .layers()
                         .find_map(|l| {
@@ -354,8 +349,8 @@ pub fn read_fbx_document(
                             position: [point.x as f32, point.y as f32, point.z as f32],
                             normal: [normal.x as f32, normal.y as f32, normal.z as f32],
                         });
-                        println!("{}: point: {:?}, normal: {:?}", counter, point, normal);
-                        counter += 1;
+                        // println!("{}: point: {:?}, normal: {:?}", counter, point, normal);
+                        // counter += 1;
                     }
                 }
             }
