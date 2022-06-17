@@ -231,7 +231,7 @@ fn main() {
         depth_format,
         [dimensions.width as f32, dimensions.height as f32],
     );
-    let mesh_vbo = VertexBufferRenderer::new(&mesh);
+    let mut mesh_vbo = VertexBufferRenderer::new(mesh);
 
     //logger.log(format!("{:#?}\n", caps).as_str());
     logger.log("Cant see whats behind you\n");
