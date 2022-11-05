@@ -1,5 +1,6 @@
-#![allow(dead_code, unused_variables, clippy::redundant_clone)]
+#![allow(clippy::redundant_clone)]
 
+mod app;
 mod cs;
 mod fbx;
 mod graphics_context;
@@ -11,64 +12,44 @@ mod renderer;
 mod uniforms;
 mod vertex_type;
 
-use graphics_context::GraphicsContext;
-use logger::Logger;
+use app::{App, AppCreateStruct};
+use graphics_context::GraphicsContextBuilder;
+use logger::FileLogger;
 use mesh::Mesh;
 use pipeline::{FramebufferFrameSwapper, StandardVulcanPipeline};
-use renderer::{IssueCommands, VertexBufferRenderer};
+use renderer::{IssueCommands, VertexBufferStreaming};
 use std::sync::Arc;
-use std::sync::atomic::fence;
 use uniforms::UniformHolder;
 
-use cgmath::prelude::*;
-use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, PrimaryAutoCommandBuffer, PrimaryCommandBuffer,
-};
+use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
-use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo};
+use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo};
 use vulkano::format::Format;
 use vulkano::image::ImageFormatInfo;
 use vulkano::image::{ImageUsage, SwapchainImage};
 use vulkano::instance::{Instance, InstanceCreateInfo};
-use vulkano::swapchain::{
-    self, AcquireError, Swapchain, SwapchainCreateInfo, SwapchainCreationError,
-};
-use vulkano::sync::FenceSignalFuture;
-use vulkano::sync::{self, FlushError, GpuFuture};
+use vulkano::swapchain::{Swapchain, SwapchainCreateInfo};
 use vulkano_win::VkSurfaceBuild;
-use winit::event::{Event, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop};
+use winit::event_loop::EventLoop;
 use winit::window::{Window, WindowBuilder};
 
 pub type StandardCommandBuilder = AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>;
 
-fn execute_command_buffer<T>(cg: &GraphicsContext, buff: T)
-where
-    T: PrimaryCommandBuffer + 'static,
-{
-    let future = sync::now(cg.device.clone())
-        .then_execute(cg.queue.clone(), buff)
-        .unwrap()
-        .then_signal_fence_and_flush()
-        .unwrap();
-
-    future.wait(None).unwrap();
-}
-
-fn graphics_context(device: Arc<Device>, queue: Arc<Queue>) -> GraphicsContext {
-    GraphicsContext::new(device, queue)
-}
+/* fn graphics_context(device: Arc<Device>, queue: Arc<Queue>, surface: Arc<Surface<Window>>) -> GraphicsContext {
+    GraphicsContext::new(device, queue, surface)
+} */
 
 /// This function initiates framebuffers, renderbuffers and pipeline
-fn prepare_graphics(
-    gc: &GraphicsContext,
+pub fn prepare_graphics(
+    // gc: &GraphicsContext,
+    device: Arc<Device>,
     swapchain: Arc<Swapchain<Window>>,
     swapchain_images: impl IntoIterator<Item = Arc<SwapchainImage<Window>>>,
     depth_format: Format,
     dimensions: [f32; 2],
 ) -> (StandardVulcanPipeline, UniformHolder) {
-    let vs = cs::load_vert_shader(gc.device.clone()).unwrap();
-    let fs = cs::load_frag_shader(gc.device.clone()).unwrap();
+    let vs = cs::load_vert_shader(device.clone()).unwrap();
+    let fs = cs::load_frag_shader(device.clone()).unwrap();
 
     let mut frame_holder = FramebufferFrameSwapper::new();
     let pipe = StandardVulcanPipeline::new()
@@ -78,32 +59,15 @@ fn prepare_graphics(
         .dimensions(dimensions)
         .format(swapchain.image_format())
         .images(swapchain_images)
-        .build(&gc, &mut frame_holder);
+        .build(device.clone(), &mut frame_holder);
 
-    let uniholder = UniformHolder::new(gc, pipe.pipeline.clone());
+    let uniholder = UniformHolder::new(device.clone(), pipe.pipeline.clone());
 
     (pipe, uniholder)
 }
 
-fn matrix_from_time(passed: std::time::Duration) -> cgmath::Matrix4<f32> {
-    const DISTANCE: f32 = 1.5;
-
-    let time_factor = passed.as_millis() as f32 / 1000.0;
-    let x_coord = time_factor.sin() * DISTANCE;
-    let y_coord = time_factor.cos() * DISTANCE;
-
-    cgmath::Matrix4::look_at_rh(
-        [x_coord, y_coord, DISTANCE].into(),
-        [0.0, 0.0, 0.7].into(),
-        [0.0, 0.0, 1.0].into(),
-    )
-}
-
 fn main() {
-    let mut logger = Logger::new(logger::create_logfile());
-
-    let fbxfile = input_helpers::ask::<String>("enter fbx file name").unwrap();
-    let vertex_data = fbx::read_fbx_document(&fbxfile, &mut logger).unwrap();
+    let mut logger = Box::new(FileLogger::new(logger::create_logfile()));
 
     let required_extensions = vulkano_win::required_extensions();
     let instance = Instance::new(InstanceCreateInfo {
@@ -178,7 +142,7 @@ fn main() {
                     usage: ImageUsage::depth_stencil_attachment(),
                     ..Default::default()
                 });
-                if let Ok(Some(value)) = props {
+                if let Ok(Some(_)) = props {
                     return true;
                 }
                 false
@@ -191,18 +155,12 @@ fn main() {
             .0;
         (device, queue, caps, image_format, depth_format)
     };
-    let gc = Arc::new(graphics_context(device.clone(), queue.clone()));
+    // let gc = Arc::new(graphics_context(device.clone(), queue.clone()));
 
     let dimensions = surface.window().inner_size();
     let composite_alpha = caps.supported_composite_alpha.iter().next().unwrap();
-    let mut persp_matrix = cgmath::perspective(
-        cgmath::Deg(60.0),
-        dimensions.width as f32 / dimensions.height as f32,
-        0.001,
-        1000.0,
-    );
 
-    let (mut swapchain, images) = Swapchain::new(
+    let (swapchain, images) = Swapchain::new(
         device.clone(),
         surface.clone(),
         SwapchainCreateInfo {
@@ -217,140 +175,45 @@ fn main() {
     .unwrap();
     // ImageView::new(image, create_info)
 
-    let mesh = Mesh::from_vertex_vec(gc.clone(), vertex_data);
-    let gc = graphics_context(device.clone(), queue.clone());
-    // let vertex_buffer = mesh.vbo();
-    let mut fences_in_flight: Vec<Option<FenceSignalFuture<_>>> = Vec::with_capacity(images.len());
-    for i in 0..images.len() {
-        fences_in_flight.push(None);
-    }
-    let (mut pipeline, mut uniform_holder) = prepare_graphics(
-        &gc,
-        swapchain.clone(),
-        images,
-        depth_format,
-        [dimensions.width as f32, dimensions.height as f32],
-    );
-    let mut mesh_vbo = VertexBufferRenderer::new(mesh);
+    let mut gc = {
+        let mut gcb = GraphicsContextBuilder::new();
+        gcb.init_device(device.clone())
+            .init_queue(queue.clone())
+            .init_surface(surface.clone());
+        gcb.init_swapchain(swapchain.clone())
+            .init_images(images.clone());
+        // let gc = graphics_context(device.clone(), queue.clone(), surface.clone());
+        // let vertex_buffer = mesh.vbo();
+        let (pipeline, uniform_holder) = prepare_graphics(
+            device.clone(),
+            swapchain.clone(),
+            images.clone(),
+            depth_format,
+            [dimensions.width as f32, dimensions.height as f32],
+        );
+        gcb.init_pipeline(pipeline.clone())
+            .init_uniforms(uniform_holder.clone());
+        gcb.build().expect("error building graphics context")
+    };
+
+    let mesh = {
+        // Load mesh data from fbx file
+        let file_name = input_helpers::ask::<String>("enter fbx file name").unwrap();
+        let vertex_data = fbx::read_fbx_document(&file_name, &mut *logger).unwrap();
+        Mesh::from_vertex_vec(gc.clone(), vertex_data)
+    };
+
+    // let mut mesh_vbo = VertexBufferStreaming::new(mesh.vertex_buffer());
+    gc.pipeline.renderers.push(Arc::new(mesh));
 
     //logger.log(format!("{:#?}\n", caps).as_str());
-    logger.log("Cant see whats behind you\n");
+    let app = AppCreateStruct {
+        depth_format,
+        gc,
+        logger: Box::new(*logger),
+    };
+    let mut app = App::new(app);
+    // app.logger.log("Cant see whats behind you\n");
 
-    let mut window_resized = false;
-    let mut recreate_swapchain = false;
-    let mut window_minimized = false;
-
-    let current_time = std::time::Instant::now();
-
-
-    event_loop.run(move |event, _, control_flow| match event {
-        Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } => {
-            *control_flow = ControlFlow::Exit;
-        }
-        Event::WindowEvent {
-            event: WindowEvent::Resized(size),
-            ..
-        } => {
-            window_resized = true;
-            window_minimized = size.height == 0 || size.width == 0;
-        }
-        Event::MainEventsCleared => {
-            let branch_start_time = std::time::Instant::now();
-            if window_minimized {
-                return;
-            }
-            if recreate_swapchain || window_resized {
-                recreate_swapchain = false;
-                let dimensions = surface.window().inner_size();
-
-                let (new_swapchain, images) = match swapchain.recreate(SwapchainCreateInfo {
-                    image_extent: dimensions.into(),
-                    ..swapchain.create_info()
-                }) {
-                    Ok(r) => r,
-                    Err(SwapchainCreationError::ImageExtentNotSupported { .. }) => {
-                        return;
-                    }
-                    Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
-                };
-                swapchain = new_swapchain;
-                persp_matrix = cgmath::perspective(
-                    cgmath::Deg(60.0),
-                    dimensions.width as f32 / dimensions.height as f32,
-                    0.001,
-                    1000.0,
-                );
-
-                if window_resized {
-                    window_resized = false;
-                    // command_builders = prepare_graphics(device.clone(), queue.clone(), &mesh, swapchain.clone(), images,
-                    //     depth_format, [dimensions.width as f32, dimensions.height as f32]);
-                    (pipeline, uniform_holder) = prepare_graphics(
-                        &gc,
-                        swapchain.clone(),
-                        images,
-                        depth_format,
-                        [dimensions.width as f32, dimensions.height as f32],
-                    );
-                }
-            }
-            let (image_id, suboptimal, acquire_future) =
-                match swapchain::acquire_next_image(swapchain.clone(), None) {
-                    Ok(r) => r,
-                    Err(AcquireError::OutOfDate) => {
-                        recreate_swapchain = true;
-                        return;
-                    }
-                    Err(e) => panic!("Acquiring swapchain image resulted in panic: {}", e),
-                };
-            // get the future associated with the image id
-            // can unwrap safely because image index is within this vector by construction
-            if let Some(previous_future) = std::mem::take(fences_in_flight.get_mut(image_id).unwrap()) {
-                // previous_future.cleanup_finished();
-                // TODO: what do we do on flush error here if it ever happens?
-                // for now we just panic
-                previous_future.wait(None).unwrap();
-            }
-            
-            // Create command buffer
-            let matrix = persp_matrix * matrix_from_time(current_time.elapsed());
-            let uniform_set = uniform_holder.set_view_matrix(matrix.into());
-            let mut comm_builder = gc.create_command_builder();
-            pipeline.begin_render(&mut comm_builder, &uniform_set, image_id);
-            // Loop over all renderables, when there are more than 1
-            mesh_vbo.issue_commands(&mut comm_builder);
-            pipeline.end_render(&mut comm_builder);
-
-            let comm_buffer = comm_builder.build().unwrap();
-            if suboptimal {
-                recreate_swapchain = true;
-            }
-            let branch_duration_prefence = branch_start_time.elapsed().as_micros();
-            let exec = sync::now(device.clone())
-                .join(acquire_future)
-                .then_execute(queue.clone(), comm_buffer)
-                .unwrap()
-                .then_swapchain_present(queue.clone(), swapchain.clone(), image_id)
-                .then_signal_fence_and_flush();
-
-            match exec {
-                Ok(future) => {
-                    // fences_in_flight.push(Some(future));
-                    fences_in_flight[image_id] = Some(future);
-                    // future.wait(None).unwrap();
-                }
-                Err(FlushError::OutOfDate) => {
-                    recreate_swapchain = true;
-                }
-                Err(e) => panic!("Panic on flush: {}", e),
-            }
-            let time_elapsed = current_time.elapsed().as_micros();
-            // println!("FPS: {}, branch time: {} µs, pre-fence init time: {} µs", 1000000 / time_elapsed, branch_start_time.elapsed().as_micros(), branch_duration_prefence);
-            // current_time = std::time::Instant::now();
-        }
-        _ => {}
-    });
+    event_loop.run(move |event, _, control_flow| app.event_loop(event, control_flow));
 }

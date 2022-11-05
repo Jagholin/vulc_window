@@ -1,14 +1,14 @@
-use crate::logger::Logger;
+use crate::logger::{FileLogger, Logger};
 use crate::vertex_type::VertexStruct;
 use anyhow::{bail, Error};
+use cgmath::Point3;
+use cgmath::{prelude::*, Point2, Quaternion, Vector3};
 use fbxcel_dom::any::AnyDocument;
 use fbxcel_dom::v7400::data::mesh::layer::TypedLayerElementHandle;
 use fbxcel_dom::v7400::data::mesh::{PolygonVertex, PolygonVertexIndex, PolygonVertices};
 use fbxcel_dom::v7400::object::{geometry::TypedGeometryHandle, TypedObjectHandle};
 use std::fs::File;
 use std::io::{BufReader, Write};
-use cgmath::Point3;
-use cgmath::{prelude::*, Point2, Quaternion, Vector3};
 
 // we know that T is some T: Iterator<Item=PolygonVertex>
 struct PolygonIteratorImpl<T> {
@@ -98,7 +98,7 @@ where
                         let my_iter = std::mem::take(&mut self.inner_iter).unwrap();
                         let my_iter = Box::new(my_iter.chain([pprev.clone(), prev.clone()]));
                         self.inner_iter = Some(my_iter);
-                        
+
                         self.first_call = false;
                     }
                     self.pprev_item = self.prev_item.clone();
@@ -175,7 +175,7 @@ fn ear_clipping(
             }
             if verts
                 .iter()
-                .filter(|(index, _)| *index != ix1 && *index != ix && *index != ix2 )
+                .filter(|(index, _)| *index != ix1 && *index != ix && *index != ix2)
                 .any(|(_, v)| inside_triangle(v.clone(), p1, p2, p3))
             {
                 // not an ear
@@ -251,7 +251,6 @@ fn triangulate_ngon(
         out.push(minimal_tri.0.map(|x| points[x].index));
         out.push(minimal_tri.1.map(|x| points[x].index));
     } else {
-
         // 1. find th normal by making cross product
         let mut norm = Vector3::new(0.0, 0.0, 0.0);
         for (p1, p2, p3) in points.iter().into_triples() {
@@ -271,7 +270,7 @@ fn triangulate_ngon(
         debug_assert!(axis_i.dot(axis_j).abs() < 0.002);
         debug_assert!((axis_i.magnitude2() - 1.0).abs() < 0.002);
         debug_assert!((axis_j.magnitude2() - 1.0).abs() < 0.002);
-        
+
         // 3. Create points projected into 2d plane given by {i, j}
         let projected_points: Vec<_> = points
             .iter()
@@ -303,7 +302,7 @@ fn cross_area<T: cgmath::BaseNum + cgmath::num_traits::Float>(tris: [Point3<T>; 
 
 pub fn read_fbx_document(
     file_name: &str,
-    logger: &mut Logger<impl Write>,
+    logger: &mut dyn Logger,
 ) -> Result<Vec<VertexStruct>, Error> {
     let file = File::open(file_name).expect("Cant open fbx file");
     let reader = BufReader::new(file);

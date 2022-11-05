@@ -1,26 +1,31 @@
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::Write;
-pub struct Logger<T: Write> {
-    stream: T,
+
+pub trait Logger {
+    fn log(&mut self, info: &str);
+    fn dump(&mut self, name: Option<&str>, data: Box<dyn Debug>);
 }
 
-impl<T> Logger<T>
-where
-    T: Write,
-{
-    pub fn new(output_stream: T) -> Logger<T> {
-        Logger {
+pub struct FileLogger {
+    stream: File,
+}
+
+impl FileLogger {
+    pub fn new(output_stream: File) -> Self {
+        FileLogger {
             stream: output_stream,
         }
     }
+}
 
-    pub fn log(&mut self, info: &str) {
+impl Logger for FileLogger {
+    fn log(&mut self, info: &str) {
         self.stream.write_all(info.as_bytes()).unwrap();
         self.stream.flush().unwrap();
     }
 
-    pub fn dump(&mut self, name: Option<&str>, data: &impl Debug) {
+    fn dump(&mut self, name: Option<&str>, data: Box<dyn Debug>) {
         let buffer = format!("{:#?}", data);
         if let Some(name) = name {
             let name = name.to_owned() + ": ";
@@ -31,7 +36,7 @@ where
     }
 }
 
-pub fn create_logfile() -> impl Write {
+pub fn create_logfile() -> File {
     let logfile = File::options()
         .write(true)
         .create(true)

@@ -5,6 +5,7 @@ use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::PrimaryAutoCommandBuffer;
 use vulkano::command_buffer::SubpassContents;
 use vulkano::descriptor_set::layout::DescriptorSetLayout;
+use vulkano::device::Device;
 use vulkano::format::ClearValue;
 use vulkano::format::Format;
 use vulkano::image::{view::ImageView, view::ImageViewCreateInfo, AttachmentImage, SwapchainImage};
@@ -94,7 +95,8 @@ impl FramebufferGiver for FramebufferFrameSwapper {
 }
 
 fn shader_pipeline_graphics(
-    gc: &GraphicsContext,
+    // gc: &GraphicsContext,
+    device: Arc<Device>,
     vs: Arc<ShaderModule>,
     fs: Arc<ShaderModule>,
     format: Format,
@@ -107,7 +109,7 @@ fn shader_pipeline_graphics(
         depth_range: 0.0..1.0,
     };
 
-    let render_pass = vulkano::single_pass_renderpass!(gc.device.clone(),
+    let render_pass = vulkano::single_pass_renderpass!(device.clone(),
         attachments: {
             color: {
                 load: Clear,
@@ -137,13 +139,14 @@ fn shader_pipeline_graphics(
         .fragment_shader(fs.entry_point("main").unwrap(), ())
         .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
         .depth_stencil_state(DepthStencilState::simple_depth_test())
-        .build(gc.device.clone())
+        .build(device.clone())
         .unwrap();
     (render_pass, pipeline)
 }
 
 fn get_framebuffers(
-    gc: &GraphicsContext,
+    // gc: &GraphicsContext,
+    device: Arc<Device>,
     images: impl IntoIterator<Item = Arc<SwapchainImage<Window>>>,
     render_pass: Arc<RenderPass>,
     depth_format: Format,
@@ -154,7 +157,7 @@ fn get_framebuffers(
         .map(|image| {
             let view = ImageView::new_default(image.clone()).unwrap();
             let depth_buffer =
-                AttachmentImage::transient(gc.device.clone(), dimensions, depth_format).unwrap();
+                AttachmentImage::transient(device.clone(), dimensions, depth_format).unwrap();
             let depth_view = ImageView::new(
                 depth_buffer.clone(),
                 ImageViewCreateInfo {
@@ -176,12 +179,14 @@ fn get_framebuffers(
         .collect::<Vec<_>>()
 }
 
+#[derive(Clone)]
 pub struct VulkanPipeline<T> {
     pub pipeline: Arc<GraphicsPipeline>,
     render_pass: Arc<RenderPass>,
     // framebuffers: Vec<Arc<Framebuffer>>,
     framebuffer_giver: T,
     pre_renderers: Vec<Arc<dyn PreRenderingSteps>>,
+    pub renderers: Vec<Arc<dyn Renderer>>,
 }
 
 pub struct VulkanPipelineBuilder<T> {
@@ -191,6 +196,10 @@ pub struct VulkanPipelineBuilder<T> {
     images: Option<T>,
     depth_format: Option<Format>,
     dimensions: Option<[f32; 2]>,
+}
+
+pub trait Renderer {
+    fn render(&self, cb: &mut StandardCommandBuilder);
 }
 
 pub trait PreRenderingSteps {
@@ -240,7 +249,8 @@ where
 
     pub fn build<F: FramebufferHolder>(
         self,
-        gc: &GraphicsContext,
+        // gc: &GraphicsContext,
+        device: Arc<Device>,
         fb_holder: &mut F,
     ) -> VulkanPipeline<F::Giver> {
         let vs = self.vs.unwrap();
@@ -251,9 +261,9 @@ where
         let dims = self.dimensions.unwrap();
 
         let (render_pass, pipeline) =
-            shader_pipeline_graphics(gc, vs, fs, format, depth_format, dims);
+            shader_pipeline_graphics(device.clone(), vs, fs, format, depth_format, dims);
         let fbs = get_framebuffers(
-            gc,
+            device.clone(),
             images,
             render_pass.clone(),
             depth_format,
@@ -268,6 +278,7 @@ where
             render_pass,
             framebuffer_giver: fb_holder.framebuffer_giver(),
             pre_renderers: vec![],
+            renderers: vec![],
         }
     }
 }
@@ -319,6 +330,12 @@ where
 
     pub fn add_prerender(&mut self, pr: Arc<dyn PreRenderingSteps>) {
         self.pre_renderers.push(pr);
+    }
+
+    pub fn render(&self, command_builder: &mut StandardCommandBuilder) {
+        for renderer in &self.renderers {
+            renderer.render(command_builder);
+        }
     }
 }
 
