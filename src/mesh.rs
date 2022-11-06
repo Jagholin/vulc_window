@@ -8,7 +8,7 @@ use crate::StandardCommandBuilder;
 use std::cell::RefCell;
 use std::sync::{Arc, RwLock};
 use vulkano::buffer::{BufferUsage, DeviceLocalBuffer /* ImmutableBuffer */};
-
+/* 
 #[allow(dead_code)]
 fn create_default_vertex_vec() -> Vec<VertexStruct> {
     let v1 = VertexStruct {
@@ -25,7 +25,7 @@ fn create_default_vertex_vec() -> Vec<VertexStruct> {
     };
     vec![v1, v2, v3]
     // CpuAccessibleBuffer::from_iter(gc.device.clone(), BufferUsage::vertex_buffer(), false, [v1, v2, v3].into_iter()).unwrap()
-}
+} */
 
 pub struct Mesh {
     pub vertices: Vec<VertexStruct>,
@@ -96,7 +96,7 @@ where
 } */
 
 impl Mesh {
-    #[allow(dead_code)]
+    /* #[allow(dead_code)]
     pub fn new() -> Self {
         let vertices = create_default_vertex_vec();
         // let (vbo, buffer_ready) = vbo_from_iter(gc.clone(), vertices.iter().cloned());
@@ -108,7 +108,7 @@ impl Mesh {
             // gc,
             vbo: RefCell::new(None),
         }
-    }
+    } */
 
     pub fn from_vertex_vec(vertices: Vec<VertexStruct>) -> Self {
         // let (vbo, buffer_ready) = vbo_from_iter(gc.clone(), vertices.iter().cloned());

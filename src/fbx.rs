@@ -328,6 +328,21 @@ pub fn read_fbx_document(
                     let vertices = mesh.polygon_vertices().unwrap();
                     let triangulated_verts = vertices.triangulate_each(triangulate_ngon).unwrap();
 
+                    for l in mesh.layers() {
+                        println!("layer name: {}", l.name());
+                        for e in l.layer_element_entries() {
+                            println!("layer element: {} of type: {}", e.name(), e.type_str().unwrap_or("NONE"));
+                        }
+                    }
+                    let uv_data = mesh.layers().find_map(|l| {
+                        let entry = l.layer_element_entries().find_map(|e| {
+                            match e.typed_layer_element() {
+                                Ok(TypedLayerElementHandle::Uv(uv)) => Some(uv),
+                                _ => None
+                            }
+                        });
+                        entry.map(|e| e.uv().into_iter().next()).flatten()
+                    });
                     // let mut counter = 1;
                     let normals_data = mesh
                         .layers()
@@ -344,10 +359,18 @@ pub fn read_fbx_document(
                         .unwrap();
                     for cpi in triangulated_verts.triangle_vertex_indices() {
                         let point = triangulated_verts.control_point(cpi).unwrap();
-                        let normal = normals_data.normal(&triangulated_verts, cpi).unwrap();
+                        let normal = normals_data.normal(&triangulated_verts, cpi).expect("No normal data can be extracted");
+                        let uv = uv_data.map(|uv| {
+                            uv.uv(&triangulated_verts, cpi).unwrap()
+                        });
+                        let uv = if let Some(p) = uv {
+                            println!("UV data extracted: {}, {}", p.x, p.y);
+                            [p.x as f32, p.y as f32]
+                        } else { [0.0 as f32, 0.0 as f32] };
                         result.push(VertexStruct {
                             position: [point.x as f32, point.y as f32, point.z as f32],
                             normal: [normal.x as f32, normal.y as f32, normal.z as f32],
+                            uv
                         });
                         // println!("{}: point: {:?}, normal: {:?}", counter, point, normal);
                         // counter += 1;
