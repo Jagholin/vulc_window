@@ -1,4 +1,4 @@
-use crate::logger::{FileLogger, Logger};
+use crate::logger::Logger;
 use crate::vertex_type::VertexStruct;
 use anyhow::{bail, Error};
 use cgmath::Point3;
@@ -8,7 +8,7 @@ use fbxcel_dom::v7400::data::mesh::layer::TypedLayerElementHandle;
 use fbxcel_dom::v7400::data::mesh::{PolygonVertex, PolygonVertexIndex, PolygonVertices};
 use fbxcel_dom::v7400::object::{geometry::TypedGeometryHandle, TypedObjectHandle};
 use std::fs::File;
-use std::io::{BufReader, Write};
+use std::io::BufReader;
 
 // we know that T is some T: Iterator<Item=PolygonVertex>
 struct PolygonIteratorImpl<T> {
@@ -165,7 +165,7 @@ fn ear_clipping(
     loop {
         let mut ear_index = None;
         for triple in verts.iter().copied().into_triples() {
-            let ((ix1, p1), ear @ (ix, p2), (ix2, p3)) = triple;
+            let ((ix1, p1), (ix, p2), (ix2, p3)) = triple;
             let ab = p2 - p1;
             let bc = p3 - p2;
             let angle = ab.angle(bc);
@@ -197,6 +197,7 @@ fn ear_clipping(
     result
 }
 
+#[allow(dead_code)]
 fn polygon_winding(verts: impl Iterator<Item = Point2<f64>>) -> cgmath::Rad<f64> {
     let mut result = cgmath::Rad(0.0);
     for (p1, p2, p3) in verts.into_triples() {

@@ -2,36 +2,42 @@ use std::sync::Arc;
 use vulkano::buffer::CpuBufferPool;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::PrimaryAutoCommandBuffer;
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::descriptor_set::layout::DescriptorSetLayout;
 use vulkano::descriptor_set::layout::DescriptorType;
 use vulkano::descriptor_set::PersistentDescriptorSet;
 use vulkano::descriptor_set::WriteDescriptorSet;
 use vulkano::device::Device;
+use vulkano::memory::allocator::StandardMemoryAllocator;
 use vulkano::pipeline::GraphicsPipeline;
 use vulkano::pipeline::Pipeline;
 use vulkano::pipeline::PipelineBindPoint;
 use vulkano::pipeline::PipelineLayout;
 
 use crate::cs::ty::MatBlock;
-use crate::graphics_context::GraphicsContext;
 
 pub trait UniformStruct {
     fn apply_uniforms(&self, comm_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>);
 }
 
-#[derive(Clone)]
+// #[derive(Clone)]
 pub struct UniformHolder {
     // pub view_matrix: cs::ty::MatBlock,
     pub uniform_buffer_pool: CpuBufferPool<MatBlock>,
     pub desc_layout: Arc<DescriptorSetLayout>,
     // pub desc_set: Arc<PersistentDescriptorSet>,
     pipe_layout: Arc<PipelineLayout>,
+    allocator: StandardDescriptorSetAllocator,
 }
 
 pub struct UniformApplier(Arc<PersistentDescriptorSet>, Arc<PipelineLayout>);
 
 impl UniformHolder {
-    pub fn new(device: Arc<Device>, pipeline: Arc<GraphicsPipeline>) -> Self {
+    pub fn new(
+        allocator: Arc<StandardMemoryAllocator>,
+        device: Arc<Device>,
+        pipeline: Arc<GraphicsPipeline>,
+    ) -> Self {
         /* let initial_data = cs::ty::MatBlock {
             view_matrix: [
                 [1.0, 0.0, 0.0, 0.0],
@@ -40,7 +46,9 @@ impl UniformHolder {
                 [0.0, 0.0, 0.0, 1.0],
             ],
         }; */
-        let buff: CpuBufferPool<MatBlock> = CpuBufferPool::uniform_buffer(device.clone());
+        let buff: CpuBufferPool<MatBlock> = CpuBufferPool::uniform_buffer(allocator);
+        buff.reserve(64)
+            .expect("Cant reserve space for uniform data");
 
         /* let buff = CpuAccessibleBuffer::from_data(
             gc.device.clone(),
@@ -75,6 +83,7 @@ impl UniformHolder {
             desc_layout,
             // desc_set,
             pipe_layout,
+            allocator: StandardDescriptorSetAllocator::new(device),
         }
     }
 
@@ -84,9 +93,10 @@ impl UniformHolder {
         // drop()s writeLock
         let buffer = self
             .uniform_buffer_pool
-            .next(MatBlock { view_matrix: value })
+            .try_next(MatBlock { view_matrix: value })
             .unwrap();
         let desc_set = PersistentDescriptorSet::new(
+            &self.allocator,
             self.desc_layout.clone(),
             [WriteDescriptorSet::buffer(0, buffer)],
         )

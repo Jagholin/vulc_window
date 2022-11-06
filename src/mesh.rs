@@ -1,16 +1,15 @@
 use crate::graphics_context::GraphicsContext;
 use crate::pipeline::Renderer;
+use crate::renderer::IssueCommands;
 use crate::renderer::VertexBufferProducer;
+use crate::renderer::VertexBufferStreaming;
 use crate::vertex_type::VertexStruct;
-use crate::IssueCommands;
 use crate::StandardCommandBuilder;
-use crate::VertexBufferStreaming;
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
-use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, ImmutableBuffer};
-use vulkano::command_buffer::CommandBufferExecFuture;
-use vulkano::sync::GpuFuture;
+use std::sync::{Arc, RwLock};
+use vulkano::buffer::{BufferUsage, DeviceLocalBuffer /* ImmutableBuffer */};
 
+#[allow(dead_code)]
 fn create_default_vertex_vec() -> Vec<VertexStruct> {
     let v1 = VertexStruct {
         position: [-0.5, -0.5, 0.0],
@@ -33,22 +32,48 @@ pub struct Mesh {
     // renderer: Option<VertexBufferRenderer<VertexStruct>>,
     // vbo: Arc<ImmutableBuffer<[VertexStruct]>>,
     // buffer_ready: Arc<Mutex<bool>>,
-    gc: GraphicsContext,
+    // gc: &'a GraphicsContext,
     vbo: RefCell<Option<MeshVertexBufferProducer>>,
 }
 
 #[derive(Clone)]
 pub struct MeshVertexBufferProducer {
-    vbo: Arc<ImmutableBuffer<[VertexStruct]>>,
-    buffer_ready: Arc<Mutex<bool>>,
+    vbo: Arc<DeviceLocalBuffer<[VertexStruct]>>,
+    buffer_ready: Arc<RwLock<bool>>,
     vert_len: usize,
     // mesh: &'a Mesh<'a>,
 }
 
 fn vbo_from_iter<I>(
+    gc: &GraphicsContext,
+    data: I,
+) -> (Arc<DeviceLocalBuffer<[VertexStruct]>>, Arc<RwLock<bool>>)
+where
+    I: IntoIterator<Item = VertexStruct>,
+    I::IntoIter: ExactSizeIterator,
+{
+    let mut cbb = gc.create_command_builder();
+    let buff = DeviceLocalBuffer::from_iter(
+        &gc.standard_allocator,
+        data,
+        BufferUsage {
+            vertex_buffer: true,
+            transfer_dst: true,
+            ..Default::default()
+        },
+        &mut cbb,
+    )
+    .unwrap();
+    let cb = cbb.build().unwrap();
+    let finished_flag = Arc::new(RwLock::new(false));
+    gc.run_secondary_action(cb, finished_flag.clone());
+    (buff, finished_flag)
+}
+
+/* fn vbo_from_iter<I>(
     gc: GraphicsContext,
     data: I,
-) -> (Arc<ImmutableBuffer<[VertexStruct]>>, Arc<Mutex<bool>>)
+) -> (Arc<DeviceLocalBuffer<[VertexStruct]>>, Arc<Mutex<bool>>)
 where
     I: IntoIterator<Item = VertexStruct>,
     I::IntoIter: ExactSizeIterator,
@@ -56,7 +81,7 @@ where
     // CpuAccessibleBuffer::from_iter(gc.device.clone(), BufferUsage::vertex_buffer(), false, data)
     //    .unwrap()
     let (buff, fut) =
-        ImmutableBuffer::from_iter(data, BufferUsage::vertex_buffer(), gc.queue.clone()).unwrap();
+        DeviceLocalBuffer::from_iter(data, BufferUsage::vertex_buffer(), gc.queue.clone()).unwrap();
     let signal = Arc::new(Mutex::new(false));
     let signal_moved = signal.clone();
     std::thread::spawn(move || {
@@ -68,10 +93,11 @@ where
         *sig = true;
     });
     (buff, signal)
-}
+} */
 
 impl Mesh {
-    pub fn new(gc: GraphicsContext) -> Mesh {
+    #[allow(dead_code)]
+    pub fn new() -> Self {
         let vertices = create_default_vertex_vec();
         // let (vbo, buffer_ready) = vbo_from_iter(gc.clone(), vertices.iter().cloned());
         Mesh {
@@ -79,31 +105,31 @@ impl Mesh {
             // renderer: None,
             // vbo,
             // buffer_ready,
-            gc,
+            // gc,
             vbo: RefCell::new(None),
         }
     }
 
-    pub fn from_vertex_vec(gc: GraphicsContext, vertices: Vec<VertexStruct>) -> Mesh {
+    pub fn from_vertex_vec(vertices: Vec<VertexStruct>) -> Self {
         // let (vbo, buffer_ready) = vbo_from_iter(gc.clone(), vertices.iter().cloned());
         Mesh {
             vertices,
             // renderer: None,
             // vbo,
             // buffer_ready,
-            gc,
+            // gc,
             vbo: RefCell::new(None),
         }
     }
 
-    pub fn vertex_buffer(&self) -> MeshVertexBufferProducer {
+    pub fn vertex_buffer(&self, gc: &GraphicsContext) -> MeshVertexBufferProducer {
         let cache = self.vbo.borrow();
         if let Some(res) = &*cache {
             return res.clone();
         }
         drop(cache);
 
-        let (vbo, buffer_ready) = vbo_from_iter(self.gc.clone(), self.vertices.clone());
+        let (vbo, buffer_ready) = vbo_from_iter(gc, self.vertices.clone());
         let res = MeshVertexBufferProducer {
             vbo,
             buffer_ready,
@@ -115,10 +141,10 @@ impl Mesh {
 }
 
 impl VertexBufferProducer for MeshVertexBufferProducer {
-    type Result = ImmutableBuffer<[VertexStruct]>;
-    fn produce_vbo(&self, verts: &mut u32) -> Option<Arc<ImmutableBuffer<[VertexStruct]>>> {
+    type Result = DeviceLocalBuffer<[VertexStruct]>;
+    fn produce_vbo(&self, verts: &mut u32) -> Option<Arc<DeviceLocalBuffer<[VertexStruct]>>> {
         *verts = self.vert_len as u32;
-        let is_ready = self.buffer_ready.lock().unwrap();
+        let is_ready = self.buffer_ready.read().unwrap();
         if !*is_ready {
             return None;
         }
@@ -127,8 +153,8 @@ impl VertexBufferProducer for MeshVertexBufferProducer {
 }
 
 impl Renderer for Mesh {
-    fn render(&self, cb: &mut StandardCommandBuilder) {
-        let mut vbo = VertexBufferStreaming::new(self.vertex_buffer());
+    fn render(&self, gc: &GraphicsContext, cb: &mut StandardCommandBuilder) {
+        let mut vbo = VertexBufferStreaming::new(self.vertex_buffer(gc));
         vbo.issue_commands(cb);
     }
 }

@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crate::graphics_context::GraphicsContext;
 use crate::logger::Logger;
+use vulkano::memory::allocator::StandardMemoryAllocator;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::ControlFlow;
 
@@ -12,6 +13,7 @@ use vulkano::format::Format;
 use vulkano::image::SwapchainImage;
 use vulkano::swapchain::{
     self, AcquireError, Swapchain, SwapchainCreateInfo, SwapchainCreationError,
+    SwapchainPresentInfo,
 };
 use vulkano::sync::FenceSignalFuture;
 use vulkano::sync::{self, FlushError, GpuFuture};
@@ -19,14 +21,16 @@ use winit::window::Window;
 
 fn reset_graphics(
     // gc: &GraphicsContext,
+    allocator: Arc<StandardMemoryAllocator>,
     device: Arc<Device>,
-    swapchain: Arc<Swapchain<Window>>,
-    swapchain_images: impl IntoIterator<Item = Arc<SwapchainImage<Window>>>,
+    swapchain: Arc<Swapchain>,
+    swapchain_images: impl IntoIterator<Item = Arc<SwapchainImage>>,
     depth_format: Format,
     dimensions: [f32; 2],
     old_pipeline: &mut crate::pipeline::StandardVulcanPipeline,
 ) -> crate::uniforms::UniformHolder {
     let (p, u) = crate::prepare_graphics(
+        allocator,
         device,
         swapchain,
         swapchain_images,
@@ -55,6 +59,7 @@ fn matrix_from_time(passed: std::time::Duration) -> cgmath::Matrix4<f32> {
 }
 
 pub struct App {
+    #[allow(unused)]
     logger: Box<dyn Logger>,
     // pub vertex_data: Vec<VertexStruct>,
     gc: GraphicsContext,
@@ -78,7 +83,14 @@ impl App {
         // self.window_minimized = false;
         // self.window_resized = false;
         // self.recreate_swapchain = false;
-        let dimensions = from.gc.surface.window().inner_size();
+        let window = from
+            .gc
+            .surface
+            .object()
+            .unwrap()
+            .downcast_ref::<Window>()
+            .unwrap();
+        let dimensions = window.inner_size();
         let persp_matrix = cgmath::perspective(
             cgmath::Deg(60.0),
             dimensions.width as f32 / dimensions.height as f32,
@@ -129,7 +141,14 @@ impl App {
                 }
                 if self.recreate_swapchain || self.window_resized {
                     self.recreate_swapchain = false;
-                    let dimensions = self.gc.surface.window().inner_size();
+                    let window = self
+                        .gc
+                        .surface
+                        .object()
+                        .unwrap()
+                        .downcast_ref::<Window>()
+                        .unwrap();
+                    let dimensions = window.inner_size();
 
                     let (new_swapchain, images) =
                         match self.gc.swapchain.recreate(SwapchainCreateInfo {
@@ -156,6 +175,7 @@ impl App {
                         // command_builders = prepare_graphics(device.clone(), queue.clone(), &mesh, swapchain.clone(), images,
                         //     depth_format, [dimensions.width as f32, dimensions.height as f32]);
                         self.gc.uniform_holder = reset_graphics(
+                            self.gc.standard_allocator.clone(),
                             self.gc.device.clone(),
                             self.gc.swapchain.clone(),
                             self.gc.images.clone(),
@@ -177,7 +197,7 @@ impl App {
                 // get the future associated with the image id
                 // can unwrap safely because image index is within this vector by construction
                 if let Some(previous_future) =
-                    std::mem::take(self.fences_in_flight.get_mut(image_id).unwrap())
+                    std::mem::take(self.fences_in_flight.get_mut(image_id as usize).unwrap())
                 {
                     // previous_future.cleanup_finished();
                     // TODO: what do we do on flush error here if it ever happens?
@@ -191,10 +211,8 @@ impl App {
                 let mut comm_builder = self.gc.create_command_builder();
                 self.gc
                     .pipeline
-                    .begin_render(&mut comm_builder, &uniform_set, image_id);
-                // Loop over all renderables, when there are more than 1
-                // mesh_vbo.issue_commands(&mut comm_builder);
-                self.gc.pipeline.render(&mut comm_builder);
+                    .begin_render(&mut comm_builder, &uniform_set, image_id as usize);
+                self.gc.pipeline.render(&self.gc, &mut comm_builder);
                 self.gc.pipeline.end_render(&mut comm_builder);
 
                 let comm_buffer = comm_builder.build().unwrap();
@@ -208,8 +226,10 @@ impl App {
                     .unwrap()
                     .then_swapchain_present(
                         self.gc.queue.clone(),
-                        self.gc.swapchain.clone(),
-                        image_id,
+                        SwapchainPresentInfo::swapchain_image_index(
+                            self.gc.swapchain.clone(),
+                            image_id,
+                        ),
                     )
                     .boxed()
                     .then_signal_fence_and_flush();
@@ -217,7 +237,7 @@ impl App {
                 match exec {
                     Ok(future) => {
                         // fences_in_flight.push(Some(future));
-                        self.fences_in_flight[image_id] = Some(future);
+                        self.fences_in_flight[image_id as usize] = Some(future);
                         // future.wait(None).unwrap();
                     }
                     Err(FlushError::OutOfDate) => {

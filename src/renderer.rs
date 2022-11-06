@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use vulkano::buffer::{BufferContents, CpuAccessibleBuffer, ImmutableBuffer};
+use vulkano::buffer::{BufferContents, DeviceLocalBuffer /* ImmutableBuffer */};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
 
 type StandardCommandBuilder = AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>;
@@ -41,6 +41,7 @@ where
         }
     }
 
+    #[allow(unused)]
     fn do_ifready_mut<F>(&mut self, f: F)
     where
         F: FnOnce(&mut T::Result),
@@ -76,7 +77,7 @@ where
 
 impl<T, U> IssueCommands for VertexBufferStreaming<T>
 where
-    T: VertexBufferProducer<Result = ImmutableBuffer<[U]>>,
+    T: VertexBufferProducer<Result = DeviceLocalBuffer<[U]>>,
     [U]: BufferContents,
 {
     fn issue_commands(&mut self, command_builder: &mut StandardCommandBuilder) {
