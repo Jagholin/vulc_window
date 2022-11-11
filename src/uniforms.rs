@@ -59,6 +59,11 @@ impl UniformHolder {
         .unwrap(); */
         let pipe_layout = pipeline.layout().clone();
         let desc_sets = pipe_layout.set_layouts();
+        for ref ds in desc_sets {
+            for b in ds.bindings() {
+                println!("Binding {} is of type {:?}", b.0, b.1.descriptor_type);
+            }
+        }
         let desc_layout = desc_sets
             .into_iter()
             .find(|d| {

@@ -10,6 +10,8 @@ mod real_main;
 mod renderer;
 mod uniforms;
 mod vertex_type;
+mod image_library;
+mod streaming;
 
 //reexport some stuff from real_main
 pub use real_main::prepare_graphics;
