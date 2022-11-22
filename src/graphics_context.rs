@@ -5,7 +5,7 @@ use anyhow::anyhow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer,
@@ -20,9 +20,11 @@ use vulkano::sync::{self, GpuFuture};
 
 // enums describing communication between primary and secondary threads
 
+type Finisher = Box<dyn FnOnce() -> () + Send>;
+
 enum SecondaryCommand {
     Stop,
-    RunCommandBuffer(PrimaryAutoCommandBuffer, Arc<RwLock<bool>>),
+    RunCommandBuffer(PrimaryAutoCommandBuffer, Finisher),
 }
 
 // #[derive(Clone)]
@@ -187,7 +189,7 @@ impl GraphicsContext {
     pub fn run_secondary_action(
         &self,
         cmb: PrimaryAutoCommandBuffer,
-        finished_flag: Arc<RwLock<bool>>,
+        finished_sig: Finisher,
     ) {
         // start the thread if it's not running
         let mut current_thr = self.secondary_thread_handle.borrow_mut();
@@ -214,15 +216,15 @@ impl GraphicsContext {
                                 .unwrap();
                             j.wait(None)
                                 .expect("waiting on task in secondary thread failed");
-                            let mut lock = finish_signal.write().unwrap();
-                            *lock = true;
+                            finish_signal();
+                            //*lock = true;
                         }
                     }
                 }
             })
         });
         self.secondary_sender
-            .send(SecondaryCommand::RunCommandBuffer(cmb, finished_flag))
+            .send(SecondaryCommand::RunCommandBuffer(cmb, finished_sig))
             .expect("Channel send failed?!");
     }
 

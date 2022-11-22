@@ -12,6 +12,7 @@ mod uniforms;
 mod vertex_type;
 mod image_library;
 mod streaming;
+mod mixins;
 
 //reexport some stuff from real_main
 pub use real_main::prepare_graphics;
