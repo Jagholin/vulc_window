@@ -18,18 +18,10 @@ struct MeshStreamingData {
 
 pub struct Mesh {
     pub vertices: Vec<VertexStruct>,
-    // vbo: RefCell<Option<VertexBufferType>>,
 
     // to implement Asset<...> we need this additional data
     asset_data: RefCell<Option<MeshStreamingData>>,
 }
-
-/* #[derive(Clone)]
-pub struct MeshVertexBufferProducer {
-    vbo: Arc<DeviceLocalBuffer<[VertexStruct]>>,
-    buffer_ready: Arc<RwLock<bool>>,
-    vert_len: usize,
-} */
 
 impl<I> Asset<I> for Mesh
 where I: IntoIterator<Item=VertexStruct>,
@@ -84,23 +76,6 @@ impl Mesh {
             asset_data: RefCell::new(None)
         }
     }
-
-    /* pub fn vertex_buffer(&self, gc: &GraphicsContext) -> MeshVertexBufferProducer {
-        let cache = self.vbo.borrow();
-        if let Some(res) = &*cache {
-            return res.clone();
-        }
-        drop(cache);
-
-        let (vbo, buffer_ready) = vbo_from_iter(gc, self.vertices.clone());
-        let res = MeshVertexBufferProducer {
-            vbo,
-            buffer_ready,
-            vert_len: self.vertices.len(),
-        };
-        self.vbo.replace(Some(res.clone()));
-        res
-    } */
 }
 
 impl VertexBufferProducer for Mesh {
