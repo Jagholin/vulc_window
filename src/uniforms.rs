@@ -1,65 +1,41 @@
 use std::sync::Arc;
 use vulkano::buffer::CpuBufferPool;
-use vulkano::command_buffer::AutoCommandBufferBuilder;
-use vulkano::command_buffer::PrimaryAutoCommandBuffer;
-use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
-use vulkano::descriptor_set::layout::DescriptorSetLayout;
-use vulkano::descriptor_set::layout::DescriptorType;
-use vulkano::descriptor_set::PersistentDescriptorSet;
+use vulkano::buffer::cpu_pool::CpuBufferPoolSubbuffer;
 use vulkano::descriptor_set::WriteDescriptorSet;
-use vulkano::device::Device;
 use vulkano::memory::allocator::StandardMemoryAllocator;
-use vulkano::pipeline::GraphicsPipeline;
-use vulkano::pipeline::Pipeline;
-use vulkano::pipeline::PipelineBindPoint;
-use vulkano::pipeline::PipelineLayout;
 
 use crate::cs::ty::MatBlock;
 
-pub trait UniformStruct {
+/* pub trait UniformStruct {
     fn apply_uniforms(&self, comm_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>);
-}
+} */ 
 
 // #[derive(Clone)]
 pub struct UniformHolder {
     // pub view_matrix: cs::ty::MatBlock,
-    pub uniform_buffer_pool: CpuBufferPool<MatBlock>,
-    pub desc_layout: Arc<DescriptorSetLayout>,
+    uniform_buffer_pool: CpuBufferPool<MatBlock>,
+    current_buffer: Option<Arc<CpuBufferPoolSubbuffer<MatBlock>>>,
+    // pub desc_layout: Arc<DescriptorSetLayout>,
     // pub desc_set: Arc<PersistentDescriptorSet>,
-    pipe_layout: Arc<PipelineLayout>,
-    allocator: StandardDescriptorSetAllocator,
+    // pipe_layout: Arc<PipelineLayout>,
+    // allocator: StandardDescriptorSetAllocator,
 }
 
-pub struct UniformApplier(Arc<PersistentDescriptorSet>, Arc<PipelineLayout>);
+// pub struct UniformApplier(Arc<PersistentDescriptorSet>, Arc<PipelineLayout>);
 
 impl UniformHolder {
     pub fn new(
         allocator: Arc<StandardMemoryAllocator>,
-        device: Arc<Device>,
-        pipeline: Arc<GraphicsPipeline>,
+        // device: Arc<Device>,
+        // pipeline: Arc<GraphicsPipeline>,
     ) -> Self {
-        /* let initial_data = cs::ty::MatBlock {
-            view_matrix: [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-        }; */
         let buff: CpuBufferPool<MatBlock> = CpuBufferPool::uniform_buffer(allocator);
         buff.reserve(64)
             .expect("Cant reserve space for uniform data");
 
-        /* let buff = CpuAccessibleBuffer::from_data(
-            gc.device.clone(),
-            BufferUsage::uniform_buffer(),
-            false,
-            initial_data,
-        )
-        .unwrap(); */
-        let pipe_layout = pipeline.layout().clone();
+        /* let pipe_layout = pipeline.layout().clone();
         let desc_sets = pipe_layout.set_layouts();
-        for ref ds in desc_sets {
+        for ds in desc_sets {
             for b in ds.bindings() {
                 println!("Binding {} is of type {:?}", b.0, b.1.descriptor_type);
             }
@@ -77,7 +53,7 @@ impl UniformHolder {
                 false
             })
             .unwrap()
-            .to_owned();
+            .to_owned(); */
         // let desc_set = PersistentDescriptorSet::new(
         //    desc_layout,
         //     [WriteDescriptorSet::buffer(0, buff.clone())],
@@ -85,14 +61,15 @@ impl UniformHolder {
         //.unwrap();
         Self {
             uniform_buffer_pool: buff,
-            desc_layout,
+            current_buffer: None,
+            // desc_layout,
             // desc_set,
-            pipe_layout,
-            allocator: StandardDescriptorSetAllocator::new(device),
+            // pipe_layout,
+            // allocator: StandardDescriptorSetAllocator::new(device),
         }
     }
 
-    pub fn set_view_matrix(&self, value: [[f32; 4]; 4]) -> UniformApplier {
+    pub fn set_view_matrix(&mut self, value: [[f32; 4]; 4]) {
         // let mut write_lock = self.uniform_buffer_pool.write().unwrap();
         // write_lock.view_matrix = value;
         // drop()s writeLock
@@ -100,17 +77,25 @@ impl UniformHolder {
             .uniform_buffer_pool
             .try_next(MatBlock { view_matrix: value })
             .unwrap();
-        let desc_set = PersistentDescriptorSet::new(
-            &self.allocator,
-            self.desc_layout.clone(),
-            [WriteDescriptorSet::buffer(0, buffer)],
-        )
-        .unwrap();
-        UniformApplier(desc_set, self.pipe_layout.clone())
+        // let desc_set = PersistentDescriptorSet::new(
+        //    &self.allocator,
+        //    self.desc_layout.clone(),
+        //    [WriteDescriptorSet::buffer(0, buffer)],
+        //)
+        //.unwrap();
+        // UniformApplier(desc_set, self.pipe_layout.clone())
+        // TODO: hard coded binding locations
+        // WriteDescriptorSet::buffer(0, buffer)
+        self.current_buffer = Some(buffer);
+    }
+
+    pub fn write_descriptor(&self) -> Option<WriteDescriptorSet> {
+        self.current_buffer.clone().map(|b|
+            WriteDescriptorSet::buffer(0, b))
     }
 }
 
-impl UniformStruct for UniformApplier {
+/* impl UniformStruct for UniformApplier {
     fn apply_uniforms(
         &self,
         comm_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
@@ -122,4 +107,4 @@ impl UniformStruct for UniformApplier {
             self.0.clone(),
         );
     }
-}
+} */

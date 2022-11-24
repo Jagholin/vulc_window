@@ -52,7 +52,7 @@ pub fn prepare_graphics(
         .images(swapchain_images)
         .build(&*allocator, device.clone(), &mut frame_holder);
 
-    let uniholder = UniformHolder::new(allocator, device.clone(), pipe.pipeline.clone());
+    let uniholder = UniformHolder::new(allocator);
 
     (pipe, uniholder)
 }

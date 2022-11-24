@@ -2,6 +2,10 @@ use crate::pipeline::{FramebufferFrameSwapper, VulkanPipeline};
 use crate::uniforms::UniformHolder;
 use crate::StandardCommandBuilder;
 use anyhow::anyhow;
+use vulkano::descriptor_set::{WriteDescriptorSet, PersistentDescriptorSet};
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
+use vulkano::descriptor_set::layout::DescriptorSetLayout;
+use vulkano::pipeline::PipelineBindPoint;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -41,6 +45,7 @@ pub struct GraphicsContext {
     pub pipeline: VulkanPipeline<FramebufferFrameSwapper>,
     pub uniform_holder: UniformHolder,
     pub standard_allocator: Arc<StandardMemoryAllocator>,
+    descriptor_allocator: StandardDescriptorSetAllocator,
     standard_cb_allocator: StandardCommandBufferAllocator,
     secondary_thread_handle: RefCell<Option<std::thread::JoinHandle<()>>>,
     secondary_sender: Sender<SecondaryCommand>,
@@ -149,6 +154,7 @@ impl GraphicsContextBuilder {
             pipeline,
             uniform_holder: uniforms,
             standard_allocator: allocator,
+            descriptor_allocator: StandardDescriptorSetAllocator::new(dev.clone()),
             standard_cb_allocator: StandardCommandBufferAllocator::new(dev, Default::default()),
             secondary_thread_handle: Default::default(),
             secondary_sender: tx,
@@ -229,8 +235,37 @@ impl GraphicsContext {
     }
 
     pub fn quit(self) {
+        unimplemented!();
         // self.secondary_sender.send(SecondaryCommand::Stop);
         // self.secondary_thread_handle.join();
+    }
+
+    pub fn descriptor_set_layout(&self) -> Arc<DescriptorSetLayout> {
+        self.pipeline.descriptor_layout()
+    }
+
+    pub fn generate_descriptor_set(&self) -> Vec<WriteDescriptorSet> {
+        let desc = self.uniform_holder.write_descriptor();
+        let desc = desc.expect("Failed to generate descriptor set: uniform not ready");
+        vec![desc]
+    }
+
+    pub fn begin_render(&self, command_builder: &mut StandardCommandBuilder, frameindex: usize) {
+        // creating descriptor set for uniform block and for images
+        let pds = PersistentDescriptorSet::new(&self.descriptor_allocator, 
+            self.descriptor_set_layout(), 
+            self.generate_descriptor_set()).unwrap();
+        self.pipeline.begin_render(command_builder, frameindex);
+        command_builder.bind_descriptor_sets(PipelineBindPoint::Graphics, 
+            self.pipeline.pipeline_layout(), 0, pds);
+    }
+
+    pub fn render(&self, command_builder: &mut StandardCommandBuilder) {
+        self.pipeline.render(&self, command_builder);
+    }
+
+    pub fn end_render(&self, command_builder: &mut StandardCommandBuilder) {
+        self.pipeline.end_render(command_builder)
     }
 }
 

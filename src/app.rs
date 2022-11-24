@@ -207,13 +207,11 @@ impl App {
 
                 // Create command buffer
                 let matrix = self.persp_matrix * matrix_from_time(self.start_time.elapsed());
-                let uniform_set = self.gc.uniform_holder.set_view_matrix(matrix.into());
+                self.gc.uniform_holder.set_view_matrix(matrix.into());
                 let mut comm_builder = self.gc.create_command_builder();
-                self.gc
-                    .pipeline
-                    .begin_render(&mut comm_builder, &uniform_set, image_id as usize);
-                self.gc.pipeline.render(&self.gc, &mut comm_builder);
-                self.gc.pipeline.end_render(&mut comm_builder);
+                self.gc.begin_render(&mut comm_builder, image_id as usize);
+                self.gc.render(&mut comm_builder);
+                self.gc.end_render(&mut comm_builder);
 
                 let comm_buffer = comm_builder.build().unwrap();
                 if suboptimal {

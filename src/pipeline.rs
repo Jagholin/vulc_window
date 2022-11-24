@@ -5,6 +5,8 @@ use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::PrimaryAutoCommandBuffer;
 use vulkano::command_buffer::RenderPassBeginInfo;
 use vulkano::command_buffer::SubpassContents;
+use vulkano::descriptor_set::PersistentDescriptorSet;
+use vulkano::descriptor_set::WriteDescriptorSet;
 use vulkano::descriptor_set::layout::DescriptorSetLayout;
 use vulkano::device::Device;
 use vulkano::format::ClearValue;
@@ -12,6 +14,8 @@ use vulkano::format::Format;
 use vulkano::image::ImageSubresourceRange;
 use vulkano::image::{view::ImageView, view::ImageViewCreateInfo, AttachmentImage, SwapchainImage};
 use vulkano::memory::allocator::MemoryAllocator;
+use vulkano::pipeline::PipelineBindPoint;
+use vulkano::pipeline::PipelineLayout;
 use vulkano::pipeline::graphics::depth_stencil::DepthStencilState;
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
@@ -25,7 +29,6 @@ use vulkano::shader::ShaderModule;
 // use std::sync::RwLock;
 
 use crate::graphics_context::GraphicsContext;
-use crate::uniforms::UniformStruct;
 use crate::vertex_type::VertexStruct;
 type StandardCommandBuilder = AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>;
 
@@ -309,7 +312,8 @@ where
     pub fn begin_render(
         &self,
         command_builder: &mut StandardCommandBuilder,
-        unis: &impl UniformStruct,
+        // unis: &impl UniformStruct,
+        // descriptors: impl IntoIterator<Item = WriteDescriptorSet>,
         frameindex: usize,
     ) {
         let fb = self.framebuffer_giver.give_framebuffer(frameindex);
@@ -322,7 +326,8 @@ where
             .begin_render_pass(pass_begin, SubpassContents::Inline)
             .unwrap()
             .bind_pipeline_graphics(self.pipeline.clone());
-        unis.apply_uniforms(command_builder);
+        // applying uniforms and other descriptor sets is the task of the GraphicsContext
+        // unis.apply_uniforms(command_builder);
         for prer in self.pre_renderers.iter() {
             prer.pre_render(self.pipeline.clone(), command_builder);
         }
@@ -337,6 +342,10 @@ where
         l.set_layouts()
     }
 
+    pub fn pipeline_layout(&self) -> Arc<PipelineLayout> {
+        self.pipeline.layout().clone()
+    }
+
     pub fn add_prerender(&mut self, pr: Arc<dyn PreRenderingSteps>) {
         self.pre_renderers.push(pr);
     }
@@ -345,6 +354,15 @@ where
         for renderer in &self.renderers {
             renderer.render(gc, command_builder);
         }
+    }
+
+    pub fn descriptor_layout(&self) -> Arc<DescriptorSetLayout> {
+        let pipe_layout = self.pipeline.layout().set_layouts();
+        if pipe_layout.len() != 1 {
+            panic!("unexpected length of pipeline layouts: {}. Did something change?", pipe_layout.len());
+        }
+        let pipe_layout = pipe_layout.get(0).unwrap();
+        pipe_layout.clone()
     }
 }
 
