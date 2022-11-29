@@ -1,12 +1,10 @@
 #![allow(clippy::redundant_clone)]
 
 use crate::app::{App, AppCreateStruct};
-use crate::graphics_context::GraphicsContextBuilder;
+use crate::graphics_context::{GraphicsContextBuilder, GraphicsContext};
 use crate::logger::FileLogger;
 use crate::mesh::Mesh;
-use crate::pipeline::{FramebufferFrameSwapper, StandardVulcanPipeline};
 // use crate::renderer::{IssueCommands, VertexBufferStreaming};
-use crate::uniforms::UniformHolder;
 use std::sync::Arc;
 
 use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
@@ -14,7 +12,7 @@ use vulkano::device::physical::PhysicalDeviceType;
 use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo};
 use vulkano::format::Format;
 use vulkano::image::ImageFormatInfo;
-use vulkano::image::{ImageUsage, SwapchainImage};
+use vulkano::image::{ImageUsage};
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::memory::allocator::{GenericMemoryAllocatorCreateInfo, StandardMemoryAllocator};
 use vulkano::swapchain::{Swapchain, SwapchainCreateInfo};
@@ -28,34 +26,6 @@ pub type StandardCommandBuilder = AutoCommandBufferBuilder<PrimaryAutoCommandBuf
 /* fn graphics_context(device: Arc<Device>, queue: Arc<Queue>, surface: Arc<Surface<Window>>) -> GraphicsContext {
     GraphicsContext::new(device, queue, surface)
 } */
-
-/// This function initiates framebuffers, renderbuffers and pipeline
-pub fn prepare_graphics(
-    // gc: &GraphicsContext,
-    allocator: Arc<StandardMemoryAllocator>,
-    device: Arc<Device>,
-    swapchain: Arc<Swapchain>,
-    swapchain_images: impl IntoIterator<Item = Arc<SwapchainImage>>,
-    depth_format: Format,
-    dimensions: [f32; 2],
-) -> (StandardVulcanPipeline, UniformHolder) {
-    let vs = crate::cs::load_vert_shader(device.clone()).unwrap();
-    let fs = crate::cs::load_frag_shader(device.clone()).unwrap();
-
-    let mut frame_holder = FramebufferFrameSwapper::new();
-    let pipe = StandardVulcanPipeline::new()
-        .fs(fs)
-        .vs(vs)
-        .depth_format(depth_format)
-        .dimensions(dimensions)
-        .format(swapchain.image_format())
-        .images(swapchain_images)
-        .build(&*allocator, device.clone(), &mut frame_holder);
-
-    let uniholder = UniformHolder::new(allocator);
-
-    (pipe, uniholder)
-}
 
 pub fn real_main() {
     let mut logger = Box::new(FileLogger::new(crate::logger::create_logfile()));
@@ -214,7 +184,7 @@ pub fn real_main() {
             .init_images(images.clone());
         // let gc = graphics_context(device.clone(), queue.clone(), surface.clone());
         // let vertex_buffer = mesh.vbo();
-        let (pipeline, uniform_holder) = prepare_graphics(
+        let (pipeline, uniform_holder) = GraphicsContext::prepare_graphics(
             allocator.clone(),
             device.clone(),
             swapchain.clone(),
@@ -237,7 +207,7 @@ pub fn real_main() {
     };
 
     // let mut mesh_vbo = VertexBufferStreaming::new(mesh.vertex_buffer());
-    gc.pipeline.renderers.push(Arc::new(mesh));
+    gc.mut_pipeline().renderers.push(Arc::new(mesh));
 
     //logger.log(format!("{:#?}\n", caps).as_str());
     let app = AppCreateStruct {

@@ -1,13 +1,18 @@
-use crate::pipeline::{FramebufferFrameSwapper, VulkanPipeline};
+use crate::pipeline::{FramebufferFrameSwapper, VulkanPipeline, StandardVulcanPipeline};
 use crate::uniforms::UniformHolder;
 use crate::StandardCommandBuilder;
+use crate::image_library::{ImageLibrary, StandardImageBuffer};
 use anyhow::anyhow;
 use vulkano::descriptor_set::{WriteDescriptorSet, PersistentDescriptorSet};
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::descriptor_set::layout::DescriptorSetLayout;
+use vulkano::format::Format;
 use vulkano::pipeline::PipelineBindPoint;
+use vulkano::sampler::Sampler;
+use winit::dpi::PhysicalSize;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
@@ -19,37 +24,214 @@ use vulkano::device::Device;
 use vulkano::device::Queue;
 use vulkano::image::SwapchainImage;
 use vulkano::memory::allocator::StandardMemoryAllocator;
-use vulkano::swapchain::{Surface, Swapchain};
-use vulkano::sync::{self, GpuFuture};
+use vulkano::swapchain::{Surface, Swapchain, SwapchainCreateInfo, SwapchainCreationError, self, AcquireError, SwapchainPresentInfo};
+use vulkano::sync::{self, GpuFuture, FenceSignalFuture, FlushError};
+use winit::window::Window;
 
 // enums describing communication between primary and secondary threads
 
 type Finisher = Box<dyn FnOnce() -> () + Send>;
+
+#[derive(Debug)]
+pub enum GraphicsContextError {
+    SwapchainError(AcquireError),
+    FlushError(FlushError),
+    SuboptimalImage,
+}
+
+impl Display for GraphicsContextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SwapchainError(err) => f.write_fmt(format_args!("GC Error: {}", err)),
+            Self::SuboptimalImage => f.write_str("Suboptimal Image"),
+            Self::FlushError(err) => f.write_fmt(format_args!("GC Flush error: {}", err)),
+        }
+    }
+}
+
+impl From<AcquireError> for GraphicsContextError {
+    fn from(e: AcquireError) -> Self {
+        Self::SwapchainError(e)
+    }
+}
+
+impl From<FlushError> for GraphicsContextError {
+    fn from(e: FlushError) -> Self {
+        Self::FlushError(e)
+    }
+}
+
+impl std::error::Error for GraphicsContextError {}
 
 enum SecondaryCommand {
     Stop,
     RunCommandBuffer(PrimaryAutoCommandBuffer, Finisher),
 }
 
-// #[derive(Clone)]
-pub struct GraphicsContext {
-    pub device: Arc<Device>,
-    pub queue: Arc<Queue>,
-    secondary_queue: Arc<Queue>,
+enum ShaderBinding {
+    UniformBinding(u32, UniformHolder),
+    TextureBinding(u32, Arc<Sampler>, String),
+    StandardUniform(u32),
+}
+
+pub struct GCDeviceInternals {
+    device: Arc<Device>,
+    queue: Arc<Queue>,
     cached_commands: Arc<RefCell<HashMap<String, Arc<dyn PrimaryCommandBufferAbstract>>>>, // command_builder: StandardCommandBuilder,
-    // pipeline: Arc<ComputePipeline>,
-    // descriptor_set: Arc<PersistentDescriptorSet>,
-    pub surface: Arc<Surface>,
-    pub swapchain: Arc<Swapchain>,
-    pub images: Vec<Arc<SwapchainImage>>,
-    pub pipeline: VulkanPipeline<FramebufferFrameSwapper>,
-    pub uniform_holder: UniformHolder,
+    surface: Arc<Surface>,
+    swapchain: Arc<Swapchain>,
+    images: Vec<Arc<SwapchainImage>>,
+    fences_in_flight: Vec<RefCell<Option<FenceSignalFuture<Box<dyn GpuFuture>>>>>,
+}
+
+impl GCDeviceInternals {
+    pub fn device(&self) -> &Arc<Device> {
+        &self.device
+    }
+    pub fn queue(&self) -> &Arc<Queue> {
+        &self.queue
+    }
+    pub fn surface(&self) -> &Arc<Surface> {
+        &self.surface
+    }
+    pub fn swapchain(&self) -> &Arc<Swapchain> {
+        &self.swapchain
+    }
+    pub fn images(&self) -> &Vec<Arc<SwapchainImage>> {
+        &self.images
+    }
+
+    pub fn recreate_swapchain(&mut self) {
+        let dimensions = self.window_dimensions();
+        let (new_swapchain, images) =
+            match self.swapchain.recreate(SwapchainCreateInfo {
+                image_extent: dimensions.into(),
+                ..self.swapchain.create_info()
+            }) {
+                Ok(r) => r,
+                Err(SwapchainCreationError::ImageExtentNotSupported { .. }) => {
+                    return;
+                }
+                Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
+            };
+        self.swapchain = new_swapchain;
+        self.images = images;
+    }
+
+    pub fn window_dimensions(&self) -> PhysicalSize<u32> {
+        let window = self
+            .surface
+            .object()
+            .unwrap()
+            .downcast_ref::<Window>()
+            .unwrap();
+        window.inner_size()
+    }
+}
+
+pub struct GCPipelineInternals {
+    pipeline: VulkanPipeline<FramebufferFrameSwapper>,
+    uniform_holder: UniformHolder,
+    texture_library: ImageLibrary,
+    shader_bindings: Vec<ShaderBinding>,
+    depth_format: Format,
+}
+
+impl GCPipelineInternals {
+    pub fn pipeline(&self) -> &VulkanPipeline<FramebufferFrameSwapper> {
+        &self.pipeline
+    }
+    pub fn mut_pipeline(&mut self) -> &mut VulkanPipeline<FramebufferFrameSwapper> {
+        &mut self.pipeline
+    }
+}
+
+pub struct GCAllocators {
     pub standard_allocator: Arc<StandardMemoryAllocator>,
     descriptor_allocator: StandardDescriptorSetAllocator,
     standard_cb_allocator: StandardCommandBufferAllocator,
+}
+
+pub struct GCWorkerThread {
+    secondary_queue: Arc<Queue>,
     secondary_thread_handle: RefCell<Option<std::thread::JoinHandle<()>>>,
     secondary_sender: Sender<SecondaryCommand>,
     secondary_receiver: RefCell<Option<Receiver<SecondaryCommand>>>,
+}
+
+pub struct GraphicsContext {
+    dev: GCDeviceInternals,
+    pipe: GCPipelineInternals,
+    alloc: GCAllocators,
+    jobs: GCWorkerThread,
+}
+
+pub struct GCDevAlloc<'a> {
+    dev: &'a GCDeviceInternals,
+    alloc: &'a GCAllocators,
+}
+
+impl<'a> GCDevAlloc<'a> {
+    pub fn create_command_builder(&self) -> StandardCommandBuilder {
+        AutoCommandBufferBuilder::primary(
+            &self.alloc.standard_cb_allocator,
+            self.dev.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap()
+    }
+    pub fn alloc(&self) -> &GCAllocators {
+        self.alloc
+    }
+}
+
+pub struct GCDevJobs<'a> {
+    dev: &'a GCDeviceInternals,
+    jobs: &'a GCWorkerThread,
+}
+
+impl<'a> GCDevJobs<'a> {
+    pub fn run_secondary_action(
+        &self,
+        cmb: PrimaryAutoCommandBuffer,
+        finished_sig: Finisher,
+    ) {
+        // start the thread if it's not running
+        let mut current_thr = self.jobs.secondary_thread_handle.borrow_mut();
+        let maybe_rx = self.jobs.secondary_receiver.borrow_mut().take();
+        current_thr.get_or_insert_with(|| {
+            let qdev = self.dev.device.clone();
+            let queue_thread = self.jobs.secondary_queue.clone();
+            let rx = maybe_rx.unwrap();
+            // let rx = self.secondary_receiver.take().unwrap();
+            std::thread::spawn(move || {
+                let mut running = true;
+                while running {
+                    let cmd = rx.recv().unwrap();
+                    match cmd {
+                        SecondaryCommand::Stop => {
+                            running = false;
+                        }
+                        SecondaryCommand::RunCommandBuffer(cmb, finish_signal) => {
+                            let f = sync::now(qdev.clone());
+                            let j = f
+                                .then_execute(queue_thread.clone(), cmb)
+                                .unwrap()
+                                .then_signal_fence_and_flush()
+                                .unwrap();
+                            j.wait(None)
+                                .expect("waiting on task in secondary thread failed");
+                            finish_signal();
+                            //*lock = true;
+                        }
+                    }
+                }
+            })
+        });
+        self.jobs.secondary_sender
+            .send(SecondaryCommand::RunCommandBuffer(cmb, finished_sig))
+            .expect("Channel send failed?!");
+    }
 }
 
 #[derive(Default)]
@@ -63,6 +245,7 @@ pub struct GraphicsContextBuilder {
     pub pipeline: Option<VulkanPipeline<FramebufferFrameSwapper>>,
     pub uniform_holder: Option<UniformHolder>,
     pub allocator: Option<Arc<StandardMemoryAllocator>>,
+    pub depth_format: Option<Format>,
 }
 
 impl GraphicsContextBuilder {
@@ -105,6 +288,10 @@ impl GraphicsContextBuilder {
         self.allocator = Some(a);
         self
     }
+    pub fn init_depth_format(mut self, a: Format) -> Self {
+        self.depth_format = Some(a);
+        self
+    }
     pub fn build(self) -> anyhow::Result<GraphicsContext> {
         let dev = self.device.ok_or(anyhow!("No device present"))?;
         let que = self.queue.ok_or(anyhow!("No queue present"))?;
@@ -119,59 +306,142 @@ impl GraphicsContextBuilder {
         let allocator = self.allocator.ok_or(anyhow!("No allocator present"))?;
 
         let (tx, rx) = channel::<SecondaryCommand>();
-        /* let qdev = dev.clone();
-        let queue_thread = que2.clone();
-        let action_thread = std::thread::spawn(move || {
-            let mut running = true;
-            while running {
-                let cmd = rx.recv().unwrap();
-                match cmd {
-                    SecondaryCommand::Stop => {
-                        running = false;
-                    }
-                    SecondaryCommand::RunCommandBuffer(cmb, finish_signal) => {
-                        let f = sync::now(qdev.clone());
-                        let j = f.then_execute(queue_thread.clone(), cmb)
-                            .unwrap()
-                            .then_signal_fence_and_flush()
-                            .unwrap();
-                        j.wait(None);
-                        let mut lock = finish_signal.write().unwrap();
-                        *lock = true;
-                    }
-                }
-            }
-        }); */
 
-        Ok(GraphicsContext {
-            device: dev.clone(),
+        // create image library here
+        let cb_allocator = StandardCommandBufferAllocator::new(dev.clone(), Default::default());
+        let cbb = AutoCommandBufferBuilder::primary(&cb_allocator, que.queue_family_index(), CommandBufferUsage::OneTimeSubmit);
+        let texture_library = ImageLibrary::new(&allocator, cbb.unwrap(), Box::new(|cb_builder| {
+            let cb = cb_builder.build().unwrap();
+            let f = sync::now(dev.clone());
+            let j = f
+                .then_execute(que.clone(), cb)
+                .unwrap()
+                .then_signal_fence_and_flush()
+                .unwrap();
+            j.wait(None)
+                .expect("waiting on task in secondary thread failed");
+        }));
+
+        let images_count = images.len();
+        let mut fences_in_flight: Vec<RefCell<Option<FenceSignalFuture<Box<dyn GpuFuture>>>>> =
+            Vec::with_capacity(images_count);
+        for _ in 0..images_count {
+            fences_in_flight.push(RefCell::new(None));
+        }
+
+        let int_alloc = GCAllocators {
+            standard_allocator: allocator,
+            descriptor_allocator: StandardDescriptorSetAllocator::new(dev.clone()),
+            standard_cb_allocator: cb_allocator,
+        };
+
+        let int_dev = GCDeviceInternals {
+            device: dev,
             queue: que,
-            secondary_queue: que2,
             cached_commands: Arc::new(RefCell::new(HashMap::new())),
             surface,
             swapchain,
             images,
+            fences_in_flight: vec![],
+        };
+
+        let int_pipe = GCPipelineInternals {
             pipeline,
             uniform_holder: uniforms,
-            standard_allocator: allocator,
-            descriptor_allocator: StandardDescriptorSetAllocator::new(dev.clone()),
-            standard_cb_allocator: StandardCommandBufferAllocator::new(dev, Default::default()),
+            texture_library,
+            shader_bindings: vec![ShaderBinding::StandardUniform(0)],
+            depth_format: self.depth_format.expect("No depth format provided"),
+        };
+
+        let int_thr = GCWorkerThread {
+            secondary_queue: que2,
             secondary_thread_handle: Default::default(),
             secondary_sender: tx,
             secondary_receiver: RefCell::new(Some(rx)),
+        };
+
+        Ok(GraphicsContext {
+            dev: int_dev,
+            alloc: int_alloc,
+            pipe: int_pipe,
+            jobs: int_thr,
         })
     }
 }
 
 impl GraphicsContext {
+    /// This function initiates framebuffers, renderbuffers and pipeline
+    pub fn prepare_graphics(
+        // gc: &GraphicsContext,
+        allocator: Arc<StandardMemoryAllocator>,
+        device: Arc<Device>,
+        swapchain: Arc<Swapchain>,
+        swapchain_images: impl IntoIterator<Item = Arc<SwapchainImage>>,
+        depth_format: Format,
+        dimensions: [f32; 2],
+    ) -> (StandardVulcanPipeline, UniformHolder) {
+        let vs = crate::cs::load_vert_shader(device.clone()).unwrap();
+        let fs = crate::cs::load_frag_shader(device.clone()).unwrap();
+
+        let mut frame_holder = FramebufferFrameSwapper::new();
+        let pipe = StandardVulcanPipeline::new()
+            .fs(fs)
+            .vs(vs)
+            .depth_format(depth_format)
+            .dimensions(dimensions)
+            .format(swapchain.image_format())
+            .images(swapchain_images)
+            .build(&*allocator, device.clone(), &mut frame_holder);
+
+        let uniholder = UniformHolder::new(allocator);
+
+        (pipe, uniholder)
+    }
+
+    pub fn reset_pipeline(
+        &mut self,
+        // swapchain_images: impl IntoIterator<Item = Arc<SwapchainImage>>,
+        // depth_format: Format,
+        // dimensions: [f32; 2],
+        // old_pipeline: &mut crate::pipeline::StandardVulcanPipeline,
+    ) {
+        let (p, u) = Self::prepare_graphics(
+            self.alloc.standard_allocator.clone(),
+            self.dev.device.clone(),
+            self.dev.swapchain.clone(),
+            self.dev.images.iter().cloned(),
+            self.pipe.depth_format,
+            self.dev.window_dimensions().into(),
+        );
+        let old_pipe = std::mem::replace(&mut self.pipe.pipeline, p);
+        self.pipe.pipeline.renderers = old_pipe.renderers;
+        self.pipe.uniform_holder = u;
+        // p.renderers = old_pipeline.renderers;
+        // *old_pipeline = p;
+        // u
+    }
+}
+
+impl GraphicsContext {
+
+    pub fn dev_alloc<'a>(dev: &'a GCDeviceInternals, alloc: &'a GCAllocators) -> GCDevAlloc<'a> {
+        GCDevAlloc { dev, alloc }
+    }
+
+    pub fn dev_jobs<'a>(dev: &'a GCDeviceInternals, jobs: &'a GCWorkerThread) -> GCDevJobs<'a> {
+        GCDevJobs { dev, jobs }
+    }
+
     pub fn create_command_builder(&self) -> StandardCommandBuilder {
-        AutoCommandBufferBuilder::primary(
-            &self.standard_cb_allocator,
-            self.queue.queue_family_index(),
+        /* AutoCommandBufferBuilder::primary(
+            &self.alloc.standard_cb_allocator,
+            self.dev.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
-        .unwrap()
+        .unwrap() */
+        Self::dev_alloc(&self.dev, &self.alloc).create_command_builder()
     }
+
     #[allow(dead_code)]
     pub fn command_buffer_cached<F>(
         &mut self,
@@ -181,7 +451,7 @@ impl GraphicsContext {
     where
         F: FnOnce(&GraphicsContext) -> Arc<dyn PrimaryCommandBufferAbstract>,
     {
-        let mut cached_commands = self.cached_commands.borrow_mut();
+        let mut cached_commands = self.dev.cached_commands.borrow_mut();
         match cached_commands.get(&name) {
             Some(buff) => buff.to_owned(),
             None => {
@@ -197,83 +467,137 @@ impl GraphicsContext {
         cmb: PrimaryAutoCommandBuffer,
         finished_sig: Finisher,
     ) {
-        // start the thread if it's not running
-        let mut current_thr = self.secondary_thread_handle.borrow_mut();
-        let maybe_rx = self.secondary_receiver.borrow_mut().take();
-        current_thr.get_or_insert_with(|| {
-            let qdev = self.device.clone();
-            let queue_thread = self.secondary_queue.clone();
-            let rx = maybe_rx.unwrap();
-            // let rx = self.secondary_receiver.take().unwrap();
-            std::thread::spawn(move || {
-                let mut running = true;
-                while running {
-                    let cmd = rx.recv().unwrap();
-                    match cmd {
-                        SecondaryCommand::Stop => {
-                            running = false;
-                        }
-                        SecondaryCommand::RunCommandBuffer(cmb, finish_signal) => {
-                            let f = sync::now(qdev.clone());
-                            let j = f
-                                .then_execute(queue_thread.clone(), cmb)
-                                .unwrap()
-                                .then_signal_fence_and_flush()
-                                .unwrap();
-                            j.wait(None)
-                                .expect("waiting on task in secondary thread failed");
-                            finish_signal();
-                            //*lock = true;
-                        }
-                    }
-                }
-            })
-        });
-        self.secondary_sender
-            .send(SecondaryCommand::RunCommandBuffer(cmb, finished_sig))
-            .expect("Channel send failed?!");
-    }
-
-    pub fn quit(self) {
-        unimplemented!();
-        // self.secondary_sender.send(SecondaryCommand::Stop);
-        // self.secondary_thread_handle.join();
+        Self::dev_jobs(&self.dev, &self.jobs).run_secondary_action(cmb, finished_sig)
     }
 
     pub fn descriptor_set_layout(&self) -> Arc<DescriptorSetLayout> {
-        self.pipeline.descriptor_layout()
+        self.pipe.pipeline.descriptor_layout()
     }
 
     pub fn generate_descriptor_set(&self) -> Vec<WriteDescriptorSet> {
-        let desc = self.uniform_holder.write_descriptor();
-        let desc = desc.expect("Failed to generate descriptor set: uniform not ready");
-        vec![desc]
+        // let desc = self.uniform_holder.write_descriptor();
+        // let desc = desc.expect("Failed to generate descriptor set: uniform not ready");
+        // vec![desc]
+        self.pipe.shader_bindings.iter().map(|a| {
+            match a {
+                ShaderBinding::UniformBinding(binding, uni) => {
+                    uni.write_descriptor(*binding).expect("Failed to generate descriptor set: uniform not ready")
+                }
+                ShaderBinding::TextureBinding(binding, sampler, tex_key) => {
+                    let sampler = sampler.clone();
+                    let texture = self.pipe.texture_library.get_image(tex_key);
+                    let texture = texture.map(|v| v.image_view()).flatten();
+                    let texture = texture.unwrap_or(self.pipe.texture_library.fallback_texture.image_view().unwrap());
+                    // generate write descriptor for the texture here
+                    WriteDescriptorSet::image_view_sampler(*binding, texture, sampler)
+                }
+                ShaderBinding::StandardUniform(binding) => {
+                    self.pipe.uniform_holder.write_descriptor(*binding).expect("failed to generate descriptor set: uniform not ready")
+                }
+            }
+        }).collect()
+    }
+
+    pub fn render_loop(&self) -> Result<(), GraphicsContextError> {
+        let (image_id, suboptimal, acquire_future) =
+            swapchain::acquire_next_image(self.dev.swapchain.clone(), None)?;
+        if suboptimal {
+            return Err(GraphicsContextError::SuboptimalImage);
+        }
+
+        // get the future associated with the image id
+        // can unwrap safely because image index is within this vector by construction
+        let previous_future = self.dev.fences_in_flight.get(image_id as usize).unwrap();
+        let mut previous_future = previous_future.borrow_mut();
+        if let Some(previous_future) =
+            previous_future.take()
+        {
+            // previous_future.cleanup_finished();
+            // TODO: what do we do on flush error here if it ever happens?
+            // for now we just panic
+            previous_future.wait(None).unwrap();
+        }
+
+        // Create command buffer
+        let mut comm_builder = self.create_command_builder();
+        self.begin_render(&mut comm_builder, image_id as usize);
+        self.render(&mut comm_builder);
+        self.end_render(&mut comm_builder);
+
+        let comm_buffer = comm_builder.build().unwrap();
+        // let branch_duration_prefence = branch_start_time.elapsed().as_micros();
+        let exec = sync::now(self.dev.device.clone())
+            .join(acquire_future)
+            .then_execute(self.dev.queue.clone(), comm_buffer)
+            .unwrap()
+            .then_swapchain_present(
+                self.dev.queue.clone(),
+                SwapchainPresentInfo::swapchain_image_index(
+                    self.dev.swapchain.clone(),
+                    image_id,
+                ),
+            )
+            .boxed()
+            .then_signal_fence_and_flush()?;
+        // fences_in_flight.push(Some(future));
+        let mut fence_ptr = self.dev.fences_in_flight[image_id as usize].borrow_mut();
+        *fence_ptr = Some(exec);
+        // self.fences_in_flight[image_id as usize] = Some(future);
+        // future.wait(None).unwrap();
+        Ok(())
     }
 
     pub fn begin_render(&self, command_builder: &mut StandardCommandBuilder, frameindex: usize) {
         // creating descriptor set for uniform block and for images
-        let pds = PersistentDescriptorSet::new(&self.descriptor_allocator, 
+        let pds = PersistentDescriptorSet::new(&self.alloc.descriptor_allocator, 
             self.descriptor_set_layout(), 
             self.generate_descriptor_set()).unwrap();
-        self.pipeline.begin_render(command_builder, frameindex);
+        self.pipe.pipeline.begin_render(command_builder, frameindex);
         command_builder.bind_descriptor_sets(PipelineBindPoint::Graphics, 
-            self.pipeline.pipeline_layout(), 0, pds);
+            self.pipe.pipeline.pipeline_layout(), 0, pds);
     }
 
     pub fn render(&self, command_builder: &mut StandardCommandBuilder) {
-        self.pipeline.render(&self, command_builder);
+        self.pipe.pipeline.render(&self, command_builder);
     }
 
     pub fn end_render(&self, command_builder: &mut StandardCommandBuilder) {
-        self.pipeline.end_render(command_builder)
+        self.pipe.pipeline.end_render(command_builder)
+    }
+
+    pub fn create_texture(&mut self, img: StandardImageBuffer, key: impl ToString) {
+        self.pipe.texture_library.insert_image(key, 
+            &img, 
+            Self::dev_alloc(&self.dev, &self.alloc), 
+            Self::dev_jobs(&self.dev, &self.jobs));
+    }
+
+    pub fn activate_texture(&mut self, key: impl ToString, binding: usize){
+
+    }
+
+    pub fn mut_pipeline(&mut self) -> &mut VulkanPipeline<FramebufferFrameSwapper> {
+        &mut self.pipe.pipeline
+    }
+
+    pub fn dev(&self) -> &GCDeviceInternals {
+        &self.dev
+    }
+
+    pub fn mut_dev(&mut self) -> &mut GCDeviceInternals {
+        &mut self.dev
+    }
+
+    pub fn alloc(&self) -> &GCAllocators {
+        &self.alloc
     }
 }
 
 impl Drop for GraphicsContext {
     #[allow(unused_must_use)]
     fn drop(&mut self) {
-        self.secondary_sender.send(SecondaryCommand::Stop);
-        if let Some(thr) = self.secondary_thread_handle.take() {
+        self.jobs.secondary_sender.send(SecondaryCommand::Stop);
+        if let Some(thr) = self.jobs.secondary_thread_handle.take() {
             thr.join();
             println!("{}", "Joined secondary thread");
         }

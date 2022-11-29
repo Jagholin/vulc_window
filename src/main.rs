@@ -15,7 +15,7 @@ mod streaming;
 mod mixins;
 
 //reexport some stuff from real_main
-pub use real_main::prepare_graphics;
+// pub use real_main::prepare_graphics;
 pub use real_main::StandardCommandBuilder;
 
 fn main() {

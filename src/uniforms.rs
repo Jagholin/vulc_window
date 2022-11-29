@@ -89,9 +89,9 @@ impl UniformHolder {
         self.current_buffer = Some(buffer);
     }
 
-    pub fn write_descriptor(&self) -> Option<WriteDescriptorSet> {
+    pub fn write_descriptor(&self, binding: u32) -> Option<WriteDescriptorSet> {
         self.current_buffer.clone().map(|b|
-            WriteDescriptorSet::buffer(0, b))
+            WriteDescriptorSet::buffer(binding, b))
     }
 }
 

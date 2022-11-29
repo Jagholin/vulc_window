@@ -30,7 +30,7 @@ where I: IntoIterator<Item=VertexStruct>,
     fn init_from_data(&self, data: I, gc: &GraphicsContext) {
         let mut cbb = gc.create_command_builder();
         let buff = DeviceLocalBuffer::from_iter(
-            &gc.standard_allocator,
+            &gc.alloc().standard_allocator,
             data,
             BufferUsage {
                 vertex_buffer: true,
