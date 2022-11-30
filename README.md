@@ -8,7 +8,7 @@ this is a Rust/Vulkan project based on [the guide here](https://vulkano.rs/guide
 
 Current roadmap:
 
- - [ ] load images and use them as textures
+ - [x] load images and use them as textures
  - [ ] capture mouse/keyboard events and move camera around
  - [ ] add point lights and implement basic lighting algorithms
  - [ ] load fonts, render text and implement basic UI

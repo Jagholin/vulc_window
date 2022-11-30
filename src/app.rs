@@ -1,48 +1,14 @@
-use std::sync::Arc;
 use std::time::Instant;
 
-use crate::graphics_context::GraphicsContext;
+use crate::graphics_context::{GraphicsContext, GraphicsContextError};
 use crate::logger::Logger;
-use vulkano::memory::allocator::StandardMemoryAllocator;
+use image::io::Reader;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::ControlFlow;
 
 use cgmath::Matrix4;
-use vulkano::device::Device;
 use vulkano::format::Format;
-use vulkano::image::SwapchainImage;
-use vulkano::swapchain::{
-    self, AcquireError, Swapchain, SwapchainCreateInfo, SwapchainCreationError,
-    SwapchainPresentInfo,
-};
-use vulkano::sync::FenceSignalFuture;
-use vulkano::sync::{self, FlushError, GpuFuture};
 use winit::window::Window;
-
-fn reset_graphics(
-    // gc: &GraphicsContext,
-    allocator: Arc<StandardMemoryAllocator>,
-    device: Arc<Device>,
-    swapchain: Arc<Swapchain>,
-    swapchain_images: impl IntoIterator<Item = Arc<SwapchainImage>>,
-    depth_format: Format,
-    dimensions: [f32; 2],
-    old_pipeline: &mut crate::pipeline::StandardVulcanPipeline,
-) -> crate::uniforms::UniformHolder {
-    let (p, u) = crate::prepare_graphics(
-        allocator,
-        device,
-        swapchain,
-        swapchain_images,
-        depth_format,
-        dimensions,
-    );
-    let old_pipe = std::mem::replace(old_pipeline, p);
-    old_pipeline.renderers = old_pipe.renderers;
-    // p.renderers = old_pipeline.renderers;
-    // *old_pipeline = p;
-    u
-}
 
 fn matrix_from_time(passed: std::time::Duration) -> cgmath::Matrix4<f32> {
     const DISTANCE: f32 = 1.5;
@@ -67,8 +33,7 @@ pub struct App {
     window_minimized: bool,
     recreate_swapchain: bool,
     persp_matrix: Matrix4<f32>,
-    depth_format: Format,
-    fences_in_flight: Vec<Option<FenceSignalFuture<Box<dyn GpuFuture>>>>,
+    // depth_format: Format,
     start_time: Instant,
 }
 
@@ -79,13 +44,13 @@ pub struct AppCreateStruct {
 }
 
 impl App {
-    pub fn new(from: AppCreateStruct) -> Self {
+    pub fn new(mut from: AppCreateStruct) -> Self {
         // self.window_minimized = false;
         // self.window_resized = false;
         // self.recreate_swapchain = false;
         let window = from
-            .gc
-            .surface
+            .gc.dev()
+            .surface()
             .object()
             .unwrap()
             .downcast_ref::<Window>()
@@ -98,13 +63,15 @@ impl App {
             1000.0,
         );
 
-        let mut fences_in_flight: Vec<Option<FenceSignalFuture<Box<dyn GpuFuture>>>> =
-            Vec::with_capacity(from.gc.images.len());
-        for _ in 0..from.gc.images.len() {
-            fences_in_flight.push(None);
-        }
-
         let start_time = std::time::Instant::now();
+
+        // load a texture from a file
+        let my_image = Reader::open("texture.png").expect("Cannot open texture.png");
+        let my_image = my_image.decode().expect("Cant decode the image");
+        let my_image = my_image.into_rgba8();
+
+        from.gc.create_texture(my_image, "test_texture");
+        from.gc.activate_texture("test_texture", 1).unwrap();
 
         App {
             logger: from.logger,
@@ -113,8 +80,6 @@ impl App {
             window_minimized: false,
             recreate_swapchain: false,
             persp_matrix,
-            depth_format: from.depth_format,
-            fences_in_flight,
             start_time,
         }
     }
@@ -141,28 +106,9 @@ impl App {
                 }
                 if self.recreate_swapchain || self.window_resized {
                     self.recreate_swapchain = false;
-                    let window = self
-                        .gc
-                        .surface
-                        .object()
-                        .unwrap()
-                        .downcast_ref::<Window>()
-                        .unwrap();
-                    let dimensions = window.inner_size();
-
-                    let (new_swapchain, images) =
-                        match self.gc.swapchain.recreate(SwapchainCreateInfo {
-                            image_extent: dimensions.into(),
-                            ..self.gc.swapchain.create_info()
-                        }) {
-                            Ok(r) => r,
-                            Err(SwapchainCreationError::ImageExtentNotSupported { .. }) => {
-                                return;
-                            }
-                            Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
-                        };
-                    self.gc.swapchain = new_swapchain;
-                    self.gc.images = images;
+                    let mut_dev = self.gc.mut_dev();
+                    mut_dev.recreate_swapchain();
+                    let dimensions = mut_dev.window_dimensions();
                     self.persp_matrix = cgmath::perspective(
                         cgmath::Deg(60.0),
                         dimensions.width as f32 / dimensions.height as f32,
@@ -174,77 +120,26 @@ impl App {
                         self.window_resized = false;
                         // command_builders = prepare_graphics(device.clone(), queue.clone(), &mesh, swapchain.clone(), images,
                         //     depth_format, [dimensions.width as f32, dimensions.height as f32]);
-                        self.gc.uniform_holder = reset_graphics(
-                            self.gc.standard_allocator.clone(),
-                            self.gc.device.clone(),
-                            self.gc.swapchain.clone(),
-                            self.gc.images.clone(),
-                            self.depth_format,
-                            [dimensions.width as f32, dimensions.height as f32],
-                            &mut self.gc.pipeline,
-                        );
+                        self.gc.reset_pipeline();
                     }
                 }
-                let (image_id, suboptimal, acquire_future) =
-                    match swapchain::acquire_next_image(self.gc.swapchain.clone(), None) {
-                        Ok(r) => r,
-                        Err(AcquireError::OutOfDate) => {
-                            self.recreate_swapchain = true;
-                            return;
-                        }
-                        Err(e) => panic!("Acquiring swapchain image resulted in panic: {}", e),
-                    };
-                // get the future associated with the image id
-                // can unwrap safely because image index is within this vector by construction
-                if let Some(previous_future) =
-                    std::mem::take(self.fences_in_flight.get_mut(image_id as usize).unwrap())
-                {
-                    // previous_future.cleanup_finished();
-                    // TODO: what do we do on flush error here if it ever happens?
-                    // for now we just panic
-                    previous_future.wait(None).unwrap();
-                }
 
-                // Create command buffer
+                // ================================================================================
+                // todo!(); // update uniforms in graphics context
                 let matrix = self.persp_matrix * matrix_from_time(self.start_time.elapsed());
-                let uniform_set = self.gc.uniform_holder.set_view_matrix(matrix.into());
-                let mut comm_builder = self.gc.create_command_builder();
-                self.gc
-                    .pipeline
-                    .begin_render(&mut comm_builder, &uniform_set, image_id as usize);
-                self.gc.pipeline.render(&self.gc, &mut comm_builder);
-                self.gc.pipeline.end_render(&mut comm_builder);
-
-                let comm_buffer = comm_builder.build().unwrap();
-                if suboptimal {
-                    self.recreate_swapchain = true;
-                }
-                // let branch_duration_prefence = branch_start_time.elapsed().as_micros();
-                let exec = sync::now(self.gc.device.clone())
-                    .join(acquire_future)
-                    .then_execute(self.gc.queue.clone(), comm_buffer)
-                    .unwrap()
-                    .then_swapchain_present(
-                        self.gc.queue.clone(),
-                        SwapchainPresentInfo::swapchain_image_index(
-                            self.gc.swapchain.clone(),
-                            image_id,
-                        ),
-                    )
-                    .boxed()
-                    .then_signal_fence_and_flush();
-
-                match exec {
-                    Ok(future) => {
-                        // fences_in_flight.push(Some(future));
-                        self.fences_in_flight[image_id as usize] = Some(future);
-                        // future.wait(None).unwrap();
-                    }
-                    Err(FlushError::OutOfDate) => {
+                self.gc.mut_uniforms().set_view_matrix(matrix.into());
+                match self.gc.render_loop() {
+                    Err(GraphicsContextError::SuboptimalImage | GraphicsContextError::SwapchainError(_)) => {
                         self.recreate_swapchain = true;
+                    },
+                    Err(e) => {
+                        panic!("Unexpected error in render loop: {}", e);
+                    },
+                    _ => {
+
                     }
-                    Err(e) => panic!("Panic on flush: {}", e),
                 }
+                // =============================================================
                 // let time_elapsed = current_time.elapsed().as_micros();
                 // println!("FPS: {}, branch time: {} µs, pre-fence init time: {} µs", 1000000 / time_elapsed, branch_start_time.elapsed().as_micros(), branch_duration_prefence);
                 // current_time = std::time::Instant::now();
