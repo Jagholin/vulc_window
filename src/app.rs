@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use crate::graphics_context::{GraphicsContext, GraphicsContextError};
 use crate::logger::Logger;
+use image::io::Reader;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::ControlFlow;
 
@@ -43,7 +44,7 @@ pub struct AppCreateStruct {
 }
 
 impl App {
-    pub fn new(from: AppCreateStruct) -> Self {
+    pub fn new(mut from: AppCreateStruct) -> Self {
         // self.window_minimized = false;
         // self.window_resized = false;
         // self.recreate_swapchain = false;
@@ -63,6 +64,14 @@ impl App {
         );
 
         let start_time = std::time::Instant::now();
+
+        // load a texture from a file
+        let my_image = Reader::open("texture.png").expect("Cannot open texture.png");
+        let my_image = my_image.decode().expect("Cant decode the image");
+        let my_image = my_image.into_rgba8();
+
+        from.gc.create_texture(my_image, "test_texture");
+        from.gc.activate_texture("test_texture", 1).unwrap();
 
         App {
             logger: from.logger,
@@ -117,8 +126,8 @@ impl App {
 
                 // ================================================================================
                 // todo!(); // update uniforms in graphics context
-                // let matrix = self.persp_matrix * matrix_from_time(self.start_time.elapsed());
-                // self.gc.uniform_holder.set_view_matrix(matrix.into());
+                let matrix = self.persp_matrix * matrix_from_time(self.start_time.elapsed());
+                self.gc.mut_uniforms().set_view_matrix(matrix.into());
                 match self.gc.render_loop() {
                     Err(GraphicsContextError::SuboptimalImage | GraphicsContextError::SwapchainError(_)) => {
                         self.recreate_swapchain = true;

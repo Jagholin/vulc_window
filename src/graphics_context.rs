@@ -8,7 +8,7 @@ use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::descriptor_set::layout::DescriptorSetLayout;
 use vulkano::format::Format;
 use vulkano::pipeline::PipelineBindPoint;
-use vulkano::sampler::Sampler;
+use vulkano::sampler::{Sampler, SamplerCreateInfo, Filter, SamplerAddressMode};
 use winit::dpi::PhysicalSize;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -159,6 +159,14 @@ pub struct GCWorkerThread {
     secondary_receiver: RefCell<Option<Receiver<SecondaryCommand>>>,
 }
 
+/// # GraphicsContext
+/// Graphics context is an entry point for many graphical operations,
+/// like rendering, attaching new renderables, or executing command buffers
+/// on a secondary thread.
+/// 
+/// ## Elements
+/// Individual parts are segregated into different substructures by 
+/// *usage/function*. 
 pub struct GraphicsContext {
     dev: GCDeviceInternals,
     pipe: GCPipelineInternals,
@@ -342,7 +350,7 @@ impl GraphicsContextBuilder {
             surface,
             swapchain,
             images,
-            fences_in_flight: vec![],
+            fences_in_flight,
         };
 
         let int_pipe = GCPipelineInternals {
@@ -517,6 +525,7 @@ impl GraphicsContext {
             // for now we just panic
             previous_future.wait(None).unwrap();
         }
+        drop(previous_future);
 
         // Create command buffer
         let mut comm_builder = self.create_command_builder();
@@ -572,8 +581,27 @@ impl GraphicsContext {
             Self::dev_jobs(&self.dev, &self.jobs));
     }
 
-    pub fn activate_texture(&mut self, key: impl ToString, binding: usize){
-
+    pub fn activate_texture(&mut self, key: impl ToString, binding: usize) -> anyhow::Result<()>{
+        let res = self.pipe.shader_bindings.iter_mut().find_map(|val|
+            if let ShaderBinding::TextureBinding(b, _, k) = val {
+                if *b == binding as u32 {
+                    *k = key.to_string();
+                    Some((b, k))
+                } else { None }
+            } 
+            else {None});
+        if res.is_none() {
+            // texture binding was not found, insert at position
+            let my_sampler = Sampler::new(self.dev.device.clone(), SamplerCreateInfo {
+                min_filter: Filter::Nearest,
+                mag_filter: Filter::Nearest,
+                address_mode: [SamplerAddressMode::Repeat; 3],
+                ..Default::default()
+            })?;
+            // let im_view = self.pipe.texture_library.get_image(key).unwrap();
+            self.pipe.shader_bindings.push(ShaderBinding::TextureBinding(binding as u32, my_sampler, key.to_string()));
+        }
+        Ok(())
     }
 
     pub fn mut_pipeline(&mut self) -> &mut VulkanPipeline<FramebufferFrameSwapper> {
@@ -591,9 +619,15 @@ impl GraphicsContext {
     pub fn alloc(&self) -> &GCAllocators {
         &self.alloc
     }
+
+    pub fn mut_uniforms(&mut self) -> &mut UniformHolder {
+        &mut self.pipe.uniform_holder
+    }
 }
 
 impl Drop for GraphicsContext {
+    // unused_must_use: GraphicsContext is dropped only when the application finishes,
+    // so it doesnt matter what join() returnes or why.
     #[allow(unused_must_use)]
     fn drop(&mut self) {
         self.jobs.secondary_sender.send(SecondaryCommand::Stop);

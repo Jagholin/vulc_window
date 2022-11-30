@@ -195,7 +195,8 @@ pub fn real_main() {
         let gcb = gcb
             .init_pipeline(pipeline.clone())
             .init_uniforms(uniform_holder)
-            .init_allocator(allocator);
+            .init_allocator(allocator)
+            .init_depth_format(depth_format);
         gcb.build().expect("error building graphics context")
     };
 
