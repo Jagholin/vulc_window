@@ -1,3 +1,5 @@
+[![compilation](https://github.com/Jagholin/vulc_window/actions/workflows/rust.yml/badge.svg)](https://github.com/Jagholin/vulc_window/actions/workflows/rust.yml)
+
 # vulc_window
 
 (better name pending)
