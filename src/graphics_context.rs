@@ -3,6 +3,7 @@ use crate::uniforms::UniformHolder;
 use crate::StandardCommandBuilder;
 use crate::image_library::{ImageLibrary, StandardImageBuffer};
 use anyhow::anyhow;
+use image::DynamicImage;
 use vulkano::descriptor_set::{WriteDescriptorSet, PersistentDescriptorSet};
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::descriptor_set::layout::DescriptorSetLayout;
@@ -574,7 +575,9 @@ impl GraphicsContext {
         self.pipe.pipeline.end_render(command_builder)
     }
 
-    pub fn create_texture(&mut self, img: StandardImageBuffer, key: impl ToString) {
+    pub fn create_texture(&mut self, img: DynamicImage, key: impl ToString) {
+        let img = img.flipv();
+        let img = img.into_rgba8();
         self.pipe.texture_library.insert_image(key, 
             &img, 
             Self::dev_alloc(&self.dev, &self.alloc), 

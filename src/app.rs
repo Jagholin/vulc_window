@@ -68,7 +68,6 @@ impl App {
         // load a texture from a file
         let my_image = Reader::open("texture.png").expect("Cannot open texture.png");
         let my_image = my_image.decode().expect("Cant decode the image");
-        let my_image = my_image.into_rgba8();
 
         from.gc.create_texture(my_image, "test_texture");
         from.gc.activate_texture("test_texture", 1).unwrap();
