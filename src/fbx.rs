@@ -316,11 +316,30 @@ pub fn read_fbx_document(
             logger.log(format!("{:#?}", doc.tree().debug_tree()).as_str());
             for obj in doc.objects() {
                 println!(
-                    "New object: {}, class {}, sub {}",
+                    "New object: {}, class {}, sub {}, id {}",
                     obj.name().unwrap_or_default(),
                     obj.class(),
-                    obj.subclass()
+                    obj.subclass(),
+                    obj.object_id().raw()
                 );
+                if let TypedObjectHandle::Material(mat) = obj.get_typed() {
+                    println!("material object id: {}", mat.object_id().raw());
+                    for dest in mat.destination_objects() {
+                        let obj = dest.object_handle().unwrap();
+                        println!("connected object id: {}", obj.object_id().raw());
+                    }
+                    println!("material diffuse texture: {:#?}", mat.diffuse_texture());
+                    if let Some(tex) = mat.diffuse_texture() {
+                        // println!("properties: {:#?}", tex.direct_properties());
+                        println!("name: {:#?}", tex.name());
+                        println!("uv: {:#?}", tex.properties().uv_set());
+                        println!("tex filename: {:#?}", tex.video_clip().unwrap().relative_filename());
+                        // println!("node: {:#?}", tex.node());
+                    }
+                    println!("material emmisive texture: {:#?}", mat.emissive_texture());
+                    println!("normal texture; {:#?}", mat.normal_map_texture());
+                    println!("specular texture: {:#?}", mat.specular_texture());
+                };
                 if let TypedObjectHandle::Geometry(TypedGeometryHandle::Mesh(mesh)) =
                     obj.get_typed()
                 {
@@ -343,6 +362,15 @@ pub fn read_fbx_document(
                         });
                         entry.map(|e| e.uv().into_iter().next()).flatten()
                     });
+                    let material_data = mesh.layers().find_map(|l| {
+                        let entry = l.layer_element_entries().find_map(|e| {
+                            match e.typed_layer_element() {
+                                Ok(TypedLayerElementHandle::Material(mat)) => Some(mat),
+                                _ => None
+                            }
+                        });
+                        entry.map(|e| e.materials().ok()).flatten()
+                    });
                     // let mut counter = 1;
                     let normals_data = mesh
                         .layers()
@@ -364,9 +392,14 @@ pub fn read_fbx_document(
                             uv.uv(&triangulated_verts, cpi).unwrap()
                         });
                         let uv = if let Some(p) = uv {
-                            println!("UV data extracted: {}, {}", p.x, p.y);
+                            // println!("UV data extracted: {}, {}", p.x, p.y);
                             [p.x as f32, p.y as f32]
                         } else { [0.0 as f32, 0.0 as f32] };
+                        let material = material_data.map(|mat| {
+                            mat.material_index(&triangulated_verts, cpi).ok()
+                        }).flatten().map(|mat_idx| {
+                            println!("Material index: {}", mat_idx.to_u32());
+                        });
                         result.push(VertexStruct {
                             position: [point.x as f32, point.y as f32, point.z as f32],
                             normal: [normal.x as f32, normal.y as f32, normal.z as f32],

@@ -1,0 +1,9 @@
+strict digraph G {
+    B[label="hello world!", color="red"]
+    
+    /* Relationships */
+    B-> shortName
+
+    /* Ranks */
+    { rank=same; shortName; };
+}
