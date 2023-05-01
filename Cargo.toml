@@ -13,5 +13,5 @@ vulkano-shaders = "0.32.0"
 winit = "0.27.5"
 image = "0.24.5"
 fbxcel-dom = "0.0.9"
-anyhow = "1.0.68"
+anyhow = "1.0.71"
 cgmath = {version = "0.18", features = ["swizzle"]}
